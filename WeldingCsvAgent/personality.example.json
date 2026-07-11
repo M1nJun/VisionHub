@@ -1,0 +1,78 @@
+{
+  "agentId": "TEST_5-2_WELDING_CATHODE",
+  "line": "5-2",
+  "visionName": "Welding Cathode Vision",
+  "visionType": "Welding Vision",
+  "pollIntervalMs": 1000,
+  "stateFile": "state.json",
+  "logFile": "agent.log",
+  "csv": {
+    "folder": "D:\\Files\\Data\\Result\\Day",
+    "filePattern": "#5-2 WELDING VISION(+)_JF2_{yyyyMMdd}*.csv",
+    "encoding": "utf-8",
+    "delimiter": ",",
+    "hasHeader": true
+  },
+  "receiver": {
+    "eventUrl": "http://10.71.103.104/events",
+    "summaryIntervalSeconds": 5,
+    "timeoutSeconds": 3
+  },
+  "columns": {
+    "no": "NO",
+    "modelId": "MODEL-ID",
+    "lotId": "LOT-ID",
+    "cellId": "CELL-ID",
+    "judge": "JUDGE",
+    "judgeDefect": "JUDGE-DEFECT"
+  },
+  "judgeRules": {
+    "okJudge": "OK",
+    "defectJudges": ["C-NG", "DLNG", "NG"],
+    "cNgAndDlngColumnFormat": "{SIDE}_{DEFECT}-JUDGE",
+    "ngColumnFormat": "{SIDE}_{DEFECT}-OK/NG",
+    "defectSideValues": ["NG", "BYPASS_NG"],
+    "sides": ["LOWER", "UPPER"],
+    "backlightDefectsUsePath1": ["G_TFL1",
+    "G_TFL2",
+    "G_TFR1",
+    "G_TFR2",
+    "G_TLL",
+    "G_TLR",
+    "Hole_Cnt",
+    "LM_Tape_burr",
+    "LONG_TAPE_L",
+    "LONG_TAPE_L1",
+    "LONG_TAPE_L2",
+    "LONG_TAPE_L3",
+    "LONG_TAPE_L4",
+    "LONG_TAPE_R",
+    "LONG_TAPE_R1",
+    "LONG_TAPE_R2",
+    "LONG_TAPE_R3",
+    "LONG_TAPE_R4",
+    "L_DOUBLE",
+    "RM_Tape_burr",
+    "R_DOUBLE",
+    "Welding_Hole"]
+  },
+  "imageColumns": {
+    "LOWER": {
+      "path1Main": "LOWER_IMAGE-PATH-1",
+      "path1Overlay": "LOWER_OVERLAY-IMAGE-PATH-1",
+      "path3Main": "LOWER_IMAGE-PATH-3",
+      "path3Overlay": "LOWER_OVERLAY-IMAGE-PATH-3"
+    },
+    "UPPER": {
+      "path1Main": "UPPER_IMAGE-PATH-1",
+      "path1Overlay": "UPPER_OVERLAY-IMAGE-PATH-1",
+      "path3Main": "UPPER_IMAGE-PATH-3",
+      "path3Overlay": "UPPER_OVERLAY-IMAGE-PATH-3"
+    }
+  },
+  "options": {
+    "sendDebugFields": true,
+    "sendLotChangeEvent": true,
+    "dryRun": false
+  }
+}
