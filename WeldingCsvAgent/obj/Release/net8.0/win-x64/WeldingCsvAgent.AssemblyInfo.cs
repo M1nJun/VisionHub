@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("WeldingCsvAgent")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d5543204cc0cbabf7cd3943bbe2d5bb43abfad4a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+dcaf89a61c5a987fefddc889f78a111a81f5c272")]
 [assembly: System.Reflection.AssemblyProductAttribute("WeldingCsvAgent")]
 [assembly: System.Reflection.AssemblyTitleAttribute("WeldingCsvAgent")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

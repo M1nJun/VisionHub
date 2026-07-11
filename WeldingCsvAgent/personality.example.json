@@ -9,13 +9,14 @@
   "csv": {
     "folder": "D:\\Files\\Data\\Result\\Day",
     "filePattern": "#5-2 WELDING VISION(+)_JF2_{yyyyMMdd}*.csv",
+    "ignoreFileNameEndsWith": ["_defect.csv"],
+    "ignoreFileNameContains": [],
     "encoding": "utf-8",
     "delimiter": ",",
     "hasHeader": true
   },
   "receiver": {
-    "eventUrl": "http://10.71.103.104/events",
-    "summaryIntervalSeconds": 5,
+    "eventUrl": "http://127.0.0.1:5000/events",
     "timeoutSeconds": 3
   },
   "columns": {
@@ -33,28 +34,7 @@
     "ngColumnFormat": "{SIDE}_{DEFECT}-OK/NG",
     "defectSideValues": ["NG", "BYPASS_NG"],
     "sides": ["LOWER", "UPPER"],
-    "backlightDefectsUsePath1": ["G_TFL1",
-    "G_TFL2",
-    "G_TFR1",
-    "G_TFR2",
-    "G_TLL",
-    "G_TLR",
-    "Hole_Cnt",
-    "LM_Tape_burr",
-    "LONG_TAPE_L",
-    "LONG_TAPE_L1",
-    "LONG_TAPE_L2",
-    "LONG_TAPE_L3",
-    "LONG_TAPE_L4",
-    "LONG_TAPE_R",
-    "LONG_TAPE_R1",
-    "LONG_TAPE_R2",
-    "LONG_TAPE_R3",
-    "LONG_TAPE_R4",
-    "L_DOUBLE",
-    "RM_Tape_burr",
-    "R_DOUBLE",
-    "Welding_Hole"]
+    "backlightDefectsUsePath1": []
   },
   "imageColumns": {
     "LOWER": {

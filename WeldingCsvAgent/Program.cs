@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
 
 var configPath = args.Length > 0 ? args[0] : "personality.json";
 if (!File.Exists(configPath))
@@ -32,12 +33,11 @@ var state = AgentState.Load(statePath);
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(config.Receiver.TimeoutSeconds <= 0 ? 3 : config.Receiver.TimeoutSeconds) };
 
 var pollMs = config.PollIntervalMs <= 0 ? 1000 : config.PollIntervalMs;
-var summaryInterval = TimeSpan.FromSeconds(config.Receiver.SummaryIntervalSeconds <= 0 ? 5 : config.Receiver.SummaryIntervalSeconds);
-var lastSummarySent = DateTimeOffset.MinValue;
 
 Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] WeldingCsvAgent started: {config.AgentId}");
 Console.WriteLine($"Config: {Path.GetFullPath(configPath)}");
 Console.WriteLine($"State : {statePath}");
+Console.WriteLine("Mode  : change-driven row events; no periodic summary events");
 Console.WriteLine("Press Ctrl+C to stop.");
 logger.Info($"Started agent {config.AgentId}");
 
@@ -50,13 +50,6 @@ while (true)
         {
             await ProcessCsvFile(file, config, state, http, logger, jsonOptions);
         }
-
-        if (DateTimeOffset.UtcNow - lastSummarySent >= summaryInterval)
-        {
-            await SendSummary(config, state, http, logger, jsonOptions);
-            lastSummarySent = DateTimeOffset.UtcNow;
-        }
-
         state.Save(statePath);
     }
     catch (Exception ex)
@@ -75,12 +68,31 @@ static IEnumerable<string> DiscoverFiles(Personality config)
     var today = DateTime.Now.ToString("yyyyMMdd");
     var pattern = (config.Csv.FilePattern ?? "*.csv").Replace("{yyyyMMdd}", today);
 
+    var ignoreEndsWith = config.Csv.IgnoreFileNameEndsWith ?? new List<string>();
+    var ignoreContains = config.Csv.IgnoreFileNameContains ?? new List<string>();
+
     foreach (var file in Directory.EnumerateFiles(folder, pattern, SearchOption.TopDirectoryOnly)
+                 .Where(f => !ShouldIgnoreFile(Path.GetFileName(f), ignoreEndsWith, ignoreContains))
                  .OrderBy(f => File.GetCreationTimeUtc(f))
                  .ThenBy(f => f, StringComparer.OrdinalIgnoreCase))
     {
         yield return file;
     }
+}
+
+static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<string> ignoreContains)
+{
+    foreach (var suffix in ignoreEndsWith)
+    {
+        if (!string.IsNullOrWhiteSpace(suffix) && fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return true;
+    }
+
+    foreach (var part in ignoreContains)
+    {
+        if (!string.IsNullOrWhiteSpace(part) && fileName.Contains(part, StringComparison.OrdinalIgnoreCase)) return true;
+    }
+
+    return false;
 }
 
 static async Task ProcessCsvFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
@@ -145,6 +157,8 @@ static async Task ProcessCsvFile(string file, Personality config, AgentState sta
                       .GroupBy(x => x.name, StringComparer.OrdinalIgnoreCase)
                       .ToDictionary(g => g.Key, g => g.First().i, StringComparer.OrdinalIgnoreCase);
 
+    var allEventsSent = true;
+
     for (int i = lineStartIndex; i < lines.Count; i++)
     {
         var line = lines[i];
@@ -159,21 +173,24 @@ static async Task ProcessCsvFile(string file, Personality config, AgentState sta
         }
 
         var row = new CsvRow(index, fields);
-        var no = row.Get(config.Columns.No);
-        var modelId = row.Get(config.Columns.ModelId);
-        var lotId = row.Get(config.Columns.LotId);
-        var cellId = row.Get(config.Columns.CellId);
+        var no = row.Get(config.Columns.No).Trim();
+        var modelId = row.Get(config.Columns.ModelId).Trim();
+        var lotId = row.Get(config.Columns.LotId).Trim();
+        var cellId = row.Get(config.Columns.CellId).Trim();
         var judge = row.Get(config.Columns.Judge).Trim();
         var judgeDefect = row.Get(config.Columns.JudgeDefect).Trim();
+        var csvFileName = Path.GetFileName(file);
 
         if (!string.IsNullOrWhiteSpace(lotId) && !string.IsNullOrWhiteSpace(fileState.LastLotId) && !string.Equals(lotId, fileState.LastLotId, StringComparison.OrdinalIgnoreCase))
         {
             state.CurrentLotId = lotId;
             if (config.Options.SendLotChangeEvent)
             {
+                var lotEventId = EventIds.Make(config.AgentId, csvFileName, fileState.LastLotId, lotId, no, cellId, "LOT_CHANGE");
                 var lotEvent = new
                 {
                     eventType = "LOT_CHANGE",
+                    eventId = lotEventId,
                     agentId = config.AgentId,
                     line = config.Line,
                     visionName = config.VisionName,
@@ -181,69 +198,142 @@ static async Task ProcessCsvFile(string file, Personality config, AgentState sta
                     newLotId = lotId,
                     detectedAtNo = no,
                     detectedAtCellId = cellId,
-                    csvFile = Path.GetFileName(file),
+                    csvFile = csvFileName,
                     createdAt = DateTimeOffset.Now
                 };
-                await SendEvent(lotEvent, config, http, logger, jsonOptions);
+                if (!await SendEvent(lotEvent, config, http, logger, jsonOptions)) { allEventsSent = false; break; }
             }
         }
+
+        var baseInfo = new RowBaseInfo(config.AgentId, config.Line, config.VisionName, config.VisionType, csvFileName, modelId, lotId, no, cellId, judge, judgeDefect);
+
+        if (string.Equals(judge, config.JudgeRules.OkJudge, StringComparison.OrdinalIgnoreCase))
+        {
+            var countEvent = BuildCountDeltaEvent(baseInfo);
+            if (!await SendEvent(countEvent, config, http, logger, jsonOptions)) { allEventsSent = false; break; }
+            state.TotalReadCount++;
+            state.OkCount++;
+        }
+        else if (config.JudgeRules.DefectJudges.Contains(judge, StringComparer.OrdinalIgnoreCase))
+        {
+            var defectEvent = BuildDefectEvent(config, row, index, baseInfo);
+            if (!await SendEvent(defectEvent, config, http, logger, jsonOptions)) { allEventsSent = false; break; }
+
+            state.TotalReadCount++;
+            state.DefectCount++;
+            if (string.Equals(judge, "C-NG", StringComparison.OrdinalIgnoreCase)) state.CNgCount++;
+            else if (string.Equals(judge, "DLNG", StringComparison.OrdinalIgnoreCase)) state.DlngCount++;
+            else if (string.Equals(judge, "NG", StringComparison.OrdinalIgnoreCase)) state.NgCount++;
+        }
+        else
+        {
+            state.UnknownJudgeCount++;
+            logger.Warn($"Unknown JUDGE value '{judge}' at NO={no}, CELL-ID={cellId}");
+            var unknownEvent = BuildUnknownJudgeEvent(baseInfo);
+            if (!await SendEvent(unknownEvent, config, http, logger, jsonOptions)) { allEventsSent = false; break; }
+        }
+
         if (!string.IsNullOrWhiteSpace(lotId)) fileState.LastLotId = lotId;
         state.CurrentLotId = lotId;
         state.CurrentModelId = modelId;
         state.LastCellId = cellId;
         state.LastNo = no;
-        state.LastCsvFile = Path.GetFileName(file);
+        state.LastCsvFile = csvFileName;
         state.LastReadTime = DateTimeOffset.Now;
-
-        state.TotalReadCount++;
-        if (string.Equals(judge, config.JudgeRules.OkJudge, StringComparison.OrdinalIgnoreCase))
-        {
-            state.OkCount++;
-            continue;
-        }
-
-        if (!config.JudgeRules.DefectJudges.Contains(judge, StringComparer.OrdinalIgnoreCase))
-        {
-            state.UnknownJudgeCount++;
-            logger.Warn($"Unknown JUDGE value '{judge}' at NO={no}, CELL-ID={cellId}");
-            continue;
-        }
-
-        state.DefectCount++;
-        if (string.Equals(judge, "C-NG", StringComparison.OrdinalIgnoreCase)) state.CNgCount++;
-        else if (string.Equals(judge, "DLNG", StringComparison.OrdinalIgnoreCase)) state.DlngCount++;
-        else if (string.Equals(judge, "NG", StringComparison.OrdinalIgnoreCase)) state.NgCount++;
-
-        var defectEvent = BuildDefectEvent(config, row, index, file, no, modelId, lotId, cellId, judge, judgeDefect);
-        await SendEvent(defectEvent, config, http, logger, jsonOptions);
     }
 
-    fileState.LastOffset = newOffset;
+    if (allEventsSent)
+    {
+        fileState.LastOffset = newOffset;
+    }
+    else
+    {
+        logger.Warn($"Not advancing file offset because at least one event failed. File will be retried: {Path.GetFileName(file)}");
+    }
 }
 
-static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string, int> index, string file, string no, string modelId, string lotId, string cellId, string judge, string judgeDefect)
+static object BuildCountDeltaEvent(RowBaseInfo b)
+{
+    var eventId = EventIds.Make(b.AgentId, b.CsvFile, b.LotId, b.No, b.CellId, b.Judge);
+    return new
+    {
+        eventType = "WELDING_COUNT_DELTA",
+        eventId,
+        agentId = b.AgentId,
+        line = b.Line,
+        visionName = b.VisionName,
+        visionType = b.VisionType,
+        csvFile = b.CsvFile,
+        modelId = b.ModelId,
+        lotId = b.LotId,
+        no = b.No,
+        cellId = b.CellId,
+        judge = b.Judge,
+        totalDelta = 1,
+        okDelta = 1,
+        defectDelta = 0,
+        createdAt = DateTimeOffset.Now
+    };
+}
+
+static object BuildUnknownJudgeEvent(RowBaseInfo b)
+{
+    var eventId = EventIds.Make(b.AgentId, b.CsvFile, b.LotId, b.No, b.CellId, b.Judge, "UNKNOWN_JUDGE");
+    return new
+    {
+        eventType = "WELDING_UNKNOWN_JUDGE",
+        eventId,
+        agentId = b.AgentId,
+        line = b.Line,
+        visionName = b.VisionName,
+        visionType = b.VisionType,
+        csvFile = b.CsvFile,
+        modelId = b.ModelId,
+        lotId = b.LotId,
+        no = b.No,
+        cellId = b.CellId,
+        judge = b.Judge,
+        judgeDefect = b.JudgeDefect,
+        totalDelta = 1,
+        okDelta = 0,
+        defectDelta = 0,
+        createdAt = DateTimeOffset.Now,
+        parseWarnings = new[] { $"Unknown JUDGE value: {b.Judge}" }
+    };
+}
+
+static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string, int> index, RowBaseInfo b)
 {
     var warnings = new List<string>();
-    var sideCheck = new Dictionary<string, object?>();
-    var defectSides = new List<string>();
-    var images = new List<object>();
+    var usePath1 = config.JudgeRules.BacklightDefectsUsePath1.Contains(b.JudgeDefect, StringComparer.OrdinalIgnoreCase);
 
-    var usePath1 = config.JudgeRules.BacklightDefectsUsePath1.Contains(judgeDefect, StringComparer.OrdinalIgnoreCase);
-    var colFormat = string.Equals(judge, "NG", StringComparison.OrdinalIgnoreCase)
+    var primaryFormat = string.Equals(b.Judge, "NG", StringComparison.OrdinalIgnoreCase)
         ? config.JudgeRules.NgColumnFormat
         : config.JudgeRules.CNgAndDlngColumnFormat;
+    var fallbackFormat = string.Equals(primaryFormat, config.JudgeRules.NgColumnFormat, StringComparison.OrdinalIgnoreCase)
+        ? config.JudgeRules.CNgAndDlngColumnFormat
+        : config.JudgeRules.NgColumnFormat;
 
-    foreach (var side in config.JudgeRules.Sides)
+    var primary = TryDetectSides(config, row, index, b.JudgeDefect, primaryFormat);
+    SideDetectionResult used = primary;
+    var fallbackUsed = false;
+
+    if (primary.DefectSides.Count == 0)
     {
-        var dynamicColumn = colFormat.Replace("{SIDE}", side).Replace("{DEFECT}", judgeDefect);
-        var value = row.Get(dynamicColumn);
-        if (!index.ContainsKey(dynamicColumn)) warnings.Add($"Column not found: {dynamicColumn}");
+        var fallback = TryDetectSides(config, row, index, b.JudgeDefect, fallbackFormat);
+        if (fallback.FoundAnyColumn || fallback.DefectSides.Count > 0)
+        {
+            used = fallback;
+            fallbackUsed = true;
+        }
+    }
 
-        sideCheck[side] = new { column = dynamicColumn, value };
-        var isDefectiveSide = config.JudgeRules.DefectSideValues.Contains(value, StringComparer.OrdinalIgnoreCase);
-        if (!isDefectiveSide) continue;
+    warnings.AddRange(used.Warnings);
+    if (used.DefectSides.Count == 0) warnings.Add("No defective side detected from dynamic LOWER/UPPER columns.");
 
-        defectSides.Add(side);
+    var images = new List<object>();
+    foreach (var side in used.DefectSides)
+    {
         if (!config.ImageColumns.TryGetValue(side, out var imageCols))
         {
             warnings.Add($"Image column config missing for side: {side}");
@@ -269,64 +359,66 @@ static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string
         });
     }
 
-    if (defectSides.Count == 0) warnings.Add("No defective side detected from dynamic LOWER/UPPER columns.");
+    var eventId = EventIds.Make(b.AgentId, b.CsvFile, b.LotId, b.No, b.CellId, b.Judge, b.JudgeDefect);
 
     return new
     {
         eventType = "WELDING_DEFECT",
-        agentId = config.AgentId,
-        line = config.Line,
-        visionName = config.VisionName,
-        visionType = config.VisionType,
-        modelId,
-        lotId,
-        cellId,
-        no,
-        judge,
-        judgeDefect,
+        eventId,
+        agentId = b.AgentId,
+        line = b.Line,
+        visionName = b.VisionName,
+        visionType = b.VisionType,
+        csvFile = b.CsvFile,
+        modelId = b.ModelId,
+        lotId = b.LotId,
+        cellId = b.CellId,
+        no = b.No,
+        judge = b.Judge,
+        judgeDefect = b.JudgeDefect,
+        totalDelta = 1,
+        okDelta = 0,
+        defectDelta = 1,
         backlightDefectUsesPath1 = usePath1,
-        sideCheckColumns = config.Options.SendDebugFields ? sideCheck : null,
-        defectSides,
+        sideDetection = new
+        {
+            primaryColumnFormat = primaryFormat,
+            fallbackColumnFormat = fallbackFormat,
+            usedColumnFormat = used.UsedColumnFormat,
+            fallbackUsed
+        },
+        sideCheckColumns = config.Options.SendDebugFields ? used.SideCheck : null,
+        defectSides = used.DefectSides,
         images,
-        parseWarnings = warnings.Count > 0 ? warnings : null,
-        csvFile = Path.GetFileName(file),
+        parseWarnings = warnings.Count > 0 ? warnings.Distinct().ToList() : null,
         createdAt = DateTimeOffset.Now
     };
 }
 
-static async Task SendSummary(Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
+static SideDetectionResult TryDetectSides(Personality config, CsvRow row, Dictionary<string, int> index, string judgeDefect, string colFormat)
 {
-    var ev = new
+    var result = new SideDetectionResult { UsedColumnFormat = colFormat };
+    foreach (var side in config.JudgeRules.Sides)
     {
-        eventType = "WELDING_SUMMARY",
-        agentId = config.AgentId,
-        line = config.Line,
-        visionName = config.VisionName,
-        visionType = config.VisionType,
-        modelId = state.CurrentModelId,
-        lotId = state.CurrentLotId,
-        csvFile = state.LastCsvFile,
-        totalReadCount = state.TotalReadCount,
-        okCount = state.OkCount,
-        defectCount = state.DefectCount,
-        cNgCount = state.CNgCount,
-        dlngCount = state.DlngCount,
-        ngCount = state.NgCount,
-        unknownJudgeCount = state.UnknownJudgeCount,
-        lastNo = state.LastNo,
-        lastCellId = state.LastCellId,
-        lastReadTime = state.LastReadTime,
-        createdAt = DateTimeOffset.Now
-    };
-    await SendEvent(ev, config, http, logger, jsonOptions);
+        var dynamicColumn = colFormat.Replace("{SIDE}", side).Replace("{DEFECT}", judgeDefect);
+        var exists = index.ContainsKey(dynamicColumn);
+        var value = row.Get(dynamicColumn).Trim();
+        if (exists) result.FoundAnyColumn = true;
+        else result.Warnings.Add($"Column not found: {dynamicColumn}");
+
+        result.SideCheck[side] = new { column = dynamicColumn, exists, value };
+        var isDefectiveSide = config.JudgeRules.DefectSideValues.Contains(value, StringComparer.OrdinalIgnoreCase);
+        if (isDefectiveSide) result.DefectSides.Add(side);
+    }
+    return result;
 }
 
-static async Task SendEvent(object ev, Personality config, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
+static async Task<bool> SendEvent(object ev, Personality config, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
 {
     if (config.Options.DryRun)
     {
         Console.WriteLine(JsonSerializer.Serialize(ev, new JsonSerializerOptions(jsonOptions) { WriteIndented = true }));
-        return;
+        return true;
     }
 
     try
@@ -335,11 +427,14 @@ static async Task SendEvent(object ev, Personality config, HttpClient http, Logg
         if (!resp.IsSuccessStatusCode)
         {
             logger.Warn($"Receiver returned {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+            return false;
         }
+        return true;
     }
     catch (Exception ex)
     {
         logger.Warn("Failed to send event: " + ex.Message);
+        return false;
     }
 }
 
@@ -357,6 +452,28 @@ static IEnumerable<string> SplitLines(string text)
 }
 
 static string MakeAbsolute(string path, string baseDir) => Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);
+
+public readonly record struct RowBaseInfo(string AgentId, string Line, string VisionName, string VisionType, string CsvFile, string ModelId, string LotId, string No, string CellId, string Judge, string JudgeDefect);
+
+public sealed class SideDetectionResult
+{
+    public string UsedColumnFormat { get; set; } = "";
+    public bool FoundAnyColumn { get; set; }
+    public Dictionary<string, object?> SideCheck { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<string> DefectSides { get; set; } = new();
+    public List<string> Warnings { get; set; } = new();
+}
+
+public static class EventIds
+{
+    public static string Make(params string?[] parts)
+    {
+        var raw = string.Join("|", parts.Select(p => (p ?? "").Trim()));
+        // Keep the human-readable key and add a short hash to avoid issues with very long/odd strings later.
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..12];
+        return raw + "|" + hash;
+    }
+}
 
 public sealed class Personality
 {
@@ -378,6 +495,8 @@ public sealed class CsvConfig
 {
     public string Folder { get; set; } = ".";
     public string FilePattern { get; set; } = "*.csv";
+    public List<string> IgnoreFileNameEndsWith { get; set; } = new() { "_defect.csv" };
+    public List<string> IgnoreFileNameContains { get; set; } = new();
     public string Encoding { get; set; } = "utf-8";
     public string Delimiter { get; set; } = ",";
     public bool HasHeader { get; set; } = true;
@@ -386,7 +505,7 @@ public sealed class CsvConfig
 public sealed class ReceiverConfig
 {
     public string EventUrl { get; set; } = "http://127.0.0.1:5000/events";
-    public int SummaryIntervalSeconds { get; set; } = 5;
+    public int SummaryIntervalSeconds { get; set; } = 0; // no longer used; kept for backward-compatible personality files
     public int TimeoutSeconds { get; set; } = 3;
 }
 public sealed class ColumnConfig
