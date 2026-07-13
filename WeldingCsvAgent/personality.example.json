@@ -9,7 +9,9 @@
   "csv": {
     "folder": "D:\\Files\\Data\\Result\\Day",
     "filePattern": "#5-2 WELDING VISION(+)_JF2_{yyyyMMdd}*.csv",
-    "ignoreFileNameEndsWith": ["_defect.csv"],
+    "ignoreFileNameEndsWith": [
+      "_defect.csv"
+    ],
     "ignoreFileNameContains": [],
     "encoding": "utf-8",
     "delimiter": ",",
@@ -29,11 +31,21 @@
   },
   "judgeRules": {
     "okJudge": "OK",
-    "defectJudges": ["C-NG", "DLNG", "NG"],
+    "defectJudges": [
+      "C-NG",
+      "DLNG",
+      "NG"
+    ],
     "cNgAndDlngColumnFormat": "{SIDE}_{DEFECT}-JUDGE",
     "ngColumnFormat": "{SIDE}_{DEFECT}-OK/NG",
-    "defectSideValues": ["NG", "BYPASS_NG"],
-    "sides": ["LOWER", "UPPER"],
+    "defectSideValues": [
+      "NG",
+      "BYPASS_NG"
+    ],
+    "sides": [
+      "LOWER",
+      "UPPER"
+    ],
     "backlightDefectsUsePath1": []
   },
   "imageColumns": {
@@ -54,5 +66,18 @@
     "sendDebugFields": true,
     "sendLotChangeEvent": true,
     "dryRun": false
+  },
+  "logMonitor": {
+    "enabled": true,
+    "driveLetters": [
+      "E",
+      "F",
+      "G"
+    ],
+    "logFolderRelativePath": "VisionPC\\LOG",
+    "fileNameFormat": "yyMMdd.Status.log",
+    "alarmMarker": "[Alarm]",
+    "startAtEndOnAgentStart": true,
+    "encoding": "utf-8"
   }
 }

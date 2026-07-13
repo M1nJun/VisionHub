@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 
 var configPath = args.Length > 0 ? args[0] : "personality.json";
 if (!File.Exists(configPath))
@@ -33,11 +34,14 @@ var state = AgentState.Load(statePath);
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(config.Receiver.TimeoutSeconds <= 0 ? 3 : config.Receiver.TimeoutSeconds) };
 
 var pollMs = config.PollIntervalMs <= 0 ? 1000 : config.PollIntervalMs;
+var agentStartupUtc = DateTimeOffset.UtcNow;
+var initializedLogFilesThisRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+var logFilesExistingAtStartup = new HashSet<string>(DiscoverStatusLogFiles(config).Select(Path.GetFullPath), StringComparer.OrdinalIgnoreCase);
 
 Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] WeldingCsvAgent started: {config.AgentId}");
 Console.WriteLine($"Config: {Path.GetFullPath(configPath)}");
 Console.WriteLine($"State : {statePath}");
-Console.WriteLine("Mode  : change-driven row events; no periodic summary events");
+Console.WriteLine("Mode  : change-driven CSV row events + Status.log alarm events");
 Console.WriteLine("Press Ctrl+C to stop.");
 logger.Info($"Started agent {config.AgentId}");
 
@@ -50,6 +54,13 @@ while (true)
         {
             await ProcessCsvFile(file, config, state, http, logger, jsonOptions);
         }
+
+        var logFiles = DiscoverStatusLogFiles(config).ToList();
+        foreach (var logFile in logFiles)
+        {
+            await ProcessStatusLogFile(logFile, config, state, http, logger, jsonOptions, agentStartupUtc, initializedLogFilesThisRun, logFilesExistingAtStartup);
+        }
+
         state.Save(statePath);
     }
     catch (Exception ex)
@@ -68,7 +79,17 @@ static IEnumerable<string> DiscoverFiles(Personality config)
     var today = DateTime.Now.ToString("yyyyMMdd");
     var pattern = (config.Csv.FilePattern ?? "*.csv").Replace("{yyyyMMdd}", today);
 
-    var ignoreEndsWith = config.Csv.IgnoreFileNameEndsWith ?? new List<string>();
+    // Safety: defect summary CSV files must never be parsed as the main result CSV.
+    // Keep _defect.csv ignored even if an old personality.json has an empty ignore list.
+    var ignoreEndsWith = new List<string>(StringComparer.OrdinalIgnoreCase) { "_defect.csv" };
+    if (config.Csv.IgnoreFileNameEndsWith != null)
+    {
+        foreach (var item in config.Csv.IgnoreFileNameEndsWith)
+        {
+            if (!string.IsNullOrWhiteSpace(item) && !ignoreEndsWith.Contains(item)) ignoreEndsWith.Add(item);
+        }
+    }
+
     var ignoreContains = config.Csv.IgnoreFileNameContains ?? new List<string>();
 
     foreach (var file in Directory.EnumerateFiles(folder, pattern, SearchOption.TopDirectoryOnly)
@@ -93,6 +114,199 @@ static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<
     }
 
     return false;
+}
+
+
+static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
+{
+    if (config.LogMonitor == null || !config.LogMonitor.Enabled) yield break;
+
+    var drives = config.LogMonitor.DriveLetters != null && config.LogMonitor.DriveLetters.Count > 0
+        ? config.LogMonitor.DriveLetters
+        : new List<string> { "E", "F", "G" };
+
+    var relative = string.IsNullOrWhiteSpace(config.LogMonitor.LogFolderRelativePath)
+        ? @"VisionPC\LOG"
+        : config.LogMonitor.LogFolderRelativePath;
+
+    var fileName = BuildStatusLogFileName(config.LogMonitor.FileNameFormat);
+
+    foreach (var drive in drives)
+    {
+        if (string.IsNullOrWhiteSpace(drive)) continue;
+        var driveLetter = drive.Trim().TrimEnd(':', '\\', '/');
+        if (driveLetter.Length == 0) continue;
+
+        var root = driveLetter + @":\";
+        try
+        {
+            if (!Directory.Exists(root)) continue;
+            var logDir = Path.Combine(root, relative);
+            if (!Directory.Exists(logDir)) continue;
+            var path = Path.Combine(logDir, fileName);
+            if (File.Exists(path)) yield return path;
+        }
+        catch
+        {
+            // Ignore inaccessible drives/folders. This keeps polling E/F/G lightweight and safe.
+        }
+    }
+}
+
+static string BuildStatusLogFileName(string? format)
+{
+    var fmt = string.IsNullOrWhiteSpace(format) ? "yyMMdd.Status.log" : format;
+    return fmt.Replace("yyyyMMdd", DateTime.Now.ToString("yyyyMMdd"))
+              .Replace("yyMMdd", DateTime.Now.ToString("yyMMdd"));
+}
+
+static async Task ProcessStatusLogFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions, DateTimeOffset agentStartupUtc, HashSet<string> initializedLogFilesThisRun, HashSet<string> logFilesExistingAtStartup)
+{
+    var fullPath = Path.GetFullPath(file);
+    var fileState = state.GetLogFileState(file);
+    var encoding = GetEncoding(config.LogMonitor.Encoding);
+
+    FileInfo fi;
+    try { fi = new FileInfo(file); }
+    catch { return; }
+
+    if (!fi.Exists) return;
+
+    if (!initializedLogFilesThisRun.Contains(fullPath))
+    {
+        initializedLogFilesThisRun.Add(fullPath);
+        if (config.LogMonitor.StartAtEndOnAgentStart && logFilesExistingAtStartup.Contains(fullPath))
+        {
+            fileState.LastOffset = fi.Length;
+            fileState.PendingPartialLine = "";
+            logger.Info($"Status log monitor started at EOF: {file}");
+            return;
+        }
+
+        if (config.LogMonitor.StartAtEndOnAgentStart && fileState.LastOffset > fi.Length)
+        {
+            fileState.LastOffset = fi.Length;
+        }
+    }
+
+    if (fi.Length < fileState.LastOffset)
+    {
+        logger.Info($"Status log file size became smaller. Starting at EOF: {file}");
+        fileState.LastOffset = fi.Length;
+        fileState.PendingPartialLine = "";
+        return;
+    }
+
+    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+    fs.Seek(fileState.LastOffset, SeekOrigin.Begin);
+
+    using var sr = new StreamReader(fs, encoding, detectEncodingFromByteOrderMarks: true, bufferSize: 8 * 1024, leaveOpen: true);
+    var appended = await sr.ReadToEndAsync();
+    var newOffset = fs.Position;
+
+    if (string.IsNullOrEmpty(appended)) return;
+
+    var combined = (fileState.PendingPartialLine ?? "") + appended;
+    var endsWithNewline = combined.EndsWith("\n") || combined.EndsWith("\r");
+    var lines = SplitLines(combined).ToList();
+
+    if (!endsWithNewline && lines.Count > 0)
+    {
+        fileState.PendingPartialLine = lines[^1];
+        lines.RemoveAt(lines.Count - 1);
+    }
+    else
+    {
+        fileState.PendingPartialLine = "";
+    }
+
+    var allEventsSent = true;
+    foreach (var line in lines)
+    {
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        if (!line.Contains(config.LogMonitor.AlarmMarker, StringComparison.OrdinalIgnoreCase)) continue;
+
+        var alarmEvent = BuildAlarmEvent(config, file, line, logger);
+        if (!await SendEvent(alarmEvent, config, http, logger, jsonOptions))
+        {
+            allEventsSent = false;
+            break;
+        }
+    }
+
+    if (allEventsSent)
+    {
+        fileState.LastOffset = newOffset;
+    }
+    else
+    {
+        logger.Warn($"Not advancing log offset because at least one alarm event failed. Log will be retried: {Path.GetFileName(file)}");
+    }
+}
+
+static object BuildAlarmEvent(Personality config, string file, string rawLine, Logger logger)
+{
+    var marker = string.IsNullOrWhiteSpace(config.LogMonitor.AlarmMarker) ? "[Alarm]" : config.LogMonitor.AlarmMarker;
+    var timestampRaw = "";
+    var alarmRawMessage = rawLine;
+    var alarmCode = "";
+    var alarmName = "";
+    var alarmDetail = "";
+    DateTimeOffset? alarmTime = null;
+
+    var lineMatch = Regex.Match(rawLine, @"^\[(?<ts>[^\]]+)\]\[Alarm\]\s*(?<msg>.*)$", RegexOptions.IgnoreCase);
+    if (lineMatch.Success)
+    {
+        timestampRaw = lineMatch.Groups["ts"].Value.Trim();
+        alarmRawMessage = lineMatch.Groups["msg"].Value.Trim();
+        if (DateTime.TryParseExact(timestampRaw, "yyyy/MM/dd HH:mm:ss.fff", null, System.Globalization.DateTimeStyles.None, out var parsedLocal))
+        {
+            alarmTime = new DateTimeOffset(parsedLocal, TimeZoneInfo.Local.GetUtcOffset(parsedLocal));
+        }
+    }
+    else
+    {
+        var idx = rawLine.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0) alarmRawMessage = rawLine[(idx + marker.Length)..].Trim();
+    }
+
+    var msgMatch = Regex.Match(alarmRawMessage, @"^(?<code>\d+)\.\s*(?<name>[^\(]+)(?:\((?<detail>[^\)]*)\))?.*$");
+    if (msgMatch.Success)
+    {
+        alarmCode = msgMatch.Groups["code"].Value.Trim();
+        alarmName = msgMatch.Groups["name"].Value.Trim();
+        alarmDetail = msgMatch.Groups["detail"].Value.Trim();
+    }
+    else
+    {
+        alarmName = alarmRawMessage;
+    }
+
+    var fileName = Path.GetFileName(file);
+    var eventId = EventIds.Make(config.AgentId, fileName, timestampRaw, alarmCode, alarmName, alarmRawMessage, rawLine);
+    var root = Path.GetPathRoot(file) ?? "";
+    var logDrive = root.TrimEnd('\\', '/', ':');
+
+    return new
+    {
+        eventType = "VISION_ALARM",
+        eventId,
+        agentId = config.AgentId,
+        line = config.Line,
+        visionName = config.VisionName,
+        visionType = config.VisionType,
+        logFile = file,
+        logFileName = fileName,
+        logDrive,
+        alarmTimeRaw = timestampRaw,
+        alarmTime = alarmTime,
+        alarmCode,
+        alarmName,
+        alarmDetail,
+        alarmRawMessage,
+        rawLine,
+        createdAt = DateTimeOffset.Now
+    };
 }
 
 static async Task ProcessCsvFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
@@ -485,11 +699,22 @@ public sealed class Personality
     public string? StateFile { get; set; }
     public string? LogFile { get; set; }
     public CsvConfig Csv { get; set; } = new();
+    public LogMonitorConfig LogMonitor { get; set; } = new();
     public ReceiverConfig Receiver { get; set; } = new();
     public ColumnConfig Columns { get; set; } = new();
     public JudgeRules JudgeRules { get; set; } = new();
     public Dictionary<string, ImageColumnConfig> ImageColumns { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Options Options { get; set; } = new();
+}
+public sealed class LogMonitorConfig
+{
+    public bool Enabled { get; set; } = true;
+    public List<string> DriveLetters { get; set; } = new() { "E", "F", "G" };
+    public string LogFolderRelativePath { get; set; } = @"VisionPC\LOG";
+    public string FileNameFormat { get; set; } = "yyMMdd.Status.log";
+    public string AlarmMarker { get; set; } = "[Alarm]";
+    public bool StartAtEndOnAgentStart { get; set; } = true;
+    public string Encoding { get; set; } = "utf-8";
 }
 public sealed class CsvConfig
 {
@@ -547,9 +772,15 @@ public sealed class FileState
     public string? PendingPartialLine { get; set; } = "";
     public List<string>? Header { get; set; }
 }
+public sealed class LogFileState
+{
+    public long LastOffset { get; set; }
+    public string? PendingPartialLine { get; set; } = "";
+}
 public sealed class AgentState
 {
     public Dictionary<string, FileState> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, LogFileState> LogFiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public long TotalReadCount { get; set; }
     public long OkCount { get; set; }
     public long DefectCount { get; set; }
@@ -571,6 +802,16 @@ public sealed class AgentState
         {
             fs = new FileState();
             Files[full] = fs;
+        }
+        return fs;
+    }
+    public LogFileState GetLogFileState(string file)
+    {
+        var full = Path.GetFullPath(file);
+        if (!LogFiles.TryGetValue(full, out var fs))
+        {
+            fs = new LogFileState();
+            LogFiles[full] = fs;
         }
         return fs;
     }

@@ -1,30 +1,76 @@
-# Welding CSV Agent + Central Test Receiver v2
+# Welding CSV Agent + Central Test Receiver v5
 
-Lightweight prototype for Welding Vision CSV parsing and central receiver testing.
+## v5 changes
 
-## Safety principles
+- Keeps all v4 behavior:
+  - Ignores `*_defect.csv` even if old `personality.json` does not list it.
+  - Sends `WELDING_COUNT_DELTA` for each new OK row.
+  - Sends `WELDING_DEFECT` for each new C-NG / DLNG / NG row.
+  - Adds deterministic `eventId` to row events.
+  - Uses side-detection fallback for exceptions such as `GAP_DL2`.
+- Adds Status.log alarm monitoring:
+  - Checks `E:\VisionPC\LOG`, `F:\VisionPC\LOG`, and `G:\VisionPC\LOG` by default.
+  - Looks for today's local PC date file: `<YYMMDD>.Status.log`, e.g. `260711.Status.log`.
+  - On agent start, begins at the end of existing log files, so old alarms are not sent.
+  - While the agent is running, sends every newly appended line containing `[Alarm]`.
+  - Sends alarm events as `VISION_ALARM`.
+  - Date rollover is handled by recalculating the local-date filename each poll.
 
-- Agent opens CSV files with `FileAccess.Read` and `FileShare.ReadWrite | FileShare.Delete`.
-- Agent never edits, moves, renames, or deletes CSV/image/log files.
-- Agent only writes its own `state.json` and `agent.log`.
-- Receiver only writes to the configured output folder.
-- This version does not fetch images. It only sends image paths for a later central fetcher.
+## Alarm event example
 
-## What changed in v2
+Input line:
 
-- No periodic `WELDING_SUMMARY` events.
-- Agent sends events only when new complete CSV rows are detected.
-- OK rows send `WELDING_COUNT_DELTA` with `totalDelta=1`, `okDelta=1`, `defectDelta=0`.
-- Defective rows send `WELDING_DEFECT` with `totalDelta=1`, `okDelta=0`, `defectDelta=1`, defect side, and image path pair.
-- Every row event includes `eventId`.
-- Receiver keeps `received_event_ids.txt` and ignores duplicate `eventId` values.
-- Side detection uses primary column format first, then fallback format if needed.
-  - C-NG / DLNG primary: `{SIDE}_{DEFECT}-JUDGE`; fallback: `{SIDE}_{DEFECT}-OK/NG`
-  - NG primary: `{SIDE}_{DEFECT}-OK/NG`; fallback: `{SIDE}_{DEFECT}-JUDGE`
+```text
+[2026/07/11 06:58:23.665][Alarm] 9003. CAMERA_GRAB_FAIL(LB0000)
+```
 
-## Central Test Receiver
+Output event shape:
 
-Build and run on the central PC:
+```json
+{
+  "eventType": "VISION_ALARM",
+  "eventId": "...",
+  "agentId": "TEST_5-2_WELDING_CATHODE",
+  "line": "5-2",
+  "visionName": "Welding Cathode Vision",
+  "logFile": "E:\\VisionPC\\LOG\\260711.Status.log",
+  "logDrive": "E",
+  "alarmTimeRaw": "2026/07/11 06:58:23.665",
+  "alarmTime": "2026-07-11T06:58:23.665-04:00",
+  "alarmCode": "9003",
+  "alarmName": "CAMERA_GRAB_FAIL",
+  "alarmDetail": "LB0000",
+  "alarmRawMessage": "9003. CAMERA_GRAB_FAIL(LB0000)",
+  "rawLine": "[2026/07/11 06:58:23.665][Alarm] 9003. CAMERA_GRAB_FAIL(LB0000)"
+}
+```
+
+## personality.json additions
+
+Existing v4 `personality.json` should still work. The log monitor defaults to enabled with E/F/G, but it is better to explicitly add:
+
+```json
+"logMonitor": {
+  "enabled": true,
+  "driveLetters": ["E", "F", "G"],
+  "logFolderRelativePath": "VisionPC\\LOG",
+  "fileNameFormat": "yyMMdd.Status.log",
+  "alarmMarker": "[Alarm]",
+  "startAtEndOnAgentStart": true,
+  "encoding": "utf-8"
+}
+```
+
+## Build
+
+Agent:
+
+```bat
+cd WeldingCsvAgent
+dotnet publish -c Release -r win-x64 --self-contained true
+```
+
+Receiver:
 
 ```bat
 cd CentralTestReceiver
@@ -32,74 +78,14 @@ go build -o CentralTestReceiver.exe
 CentralTestReceiver.exe -listen :5000 -out D:\VisionDashboardTest
 ```
 
-Output files:
+## Clean test reset
 
-```text
-D:\VisionDashboardTest\received_events.jsonl
-D:\VisionDashboardTest\received_summary.csv
-D:\VisionDashboardTest\received_event_ids.txt
-```
-
-Health check:
-
-```text
-http://<central-pc-ip>:5000/health
-```
-
-## WeldingCsvAgent
-
-Build on a Windows PC with .NET 8 SDK:
-
-```bat
-cd WeldingCsvAgent
-dotnet publish -c Release -r win-x64 --self-contained true
-```
-
-Copy the full contents of the `publish` folder to:
-
-```text
-C:\VisionDashboardAgent\
-```
-
-Copy `personality.example.json` to `personality.json`, then edit:
-
-- `receiver.eventUrl`
-- `csv.folder`
-- `csv.filePattern`
-- `agentId`, `line`, `visionName`
-- `judgeRules.backlightDefectsUsePath1`
-
-Run:
-
-```bat
-WeldingCsvAgent.exe personality.json
-```
-
-## Backlight defects / PATH-1 rule
-
-Put defect names that must use PATH-1 backlight images here:
-
-```json
-"backlightDefectsUsePath1": ["DEFECT_NAME_1", "DEFECT_NAME_2"]
-```
-
-If `JUDGE-DEFECT` matches this list, the agent sends:
-
-- `<SIDE>_IMAGE-PATH-1`
-- `<SIDE>_OVERLAY-IMAGE-PATH-1`
-
-Otherwise it sends:
-
-- `<SIDE>_IMAGE-PATH-3`
-- `<SIDE>_OVERLAY-IMAGE-PATH-3`
-
-## Testing notes
-
-For repeated tests on the same CSV copy, delete both:
+For a clean test only:
 
 ```text
 C:\VisionDashboardAgent\state.json
+D:\VisionDashboardTest\received_events.jsonl
 D:\VisionDashboardTest\received_event_ids.txt
 ```
 
-Only delete `state.json` while testing copied CSV files. Do not delete it casually when connected to live production CSV files.
+Deleting state in production can cause CSV rows to be re-read. Only do it intentionally during tests.
