@@ -81,7 +81,7 @@ static IEnumerable<string> DiscoverFiles(Personality config)
 
     // Safety: defect summary CSV files must never be parsed as the main result CSV.
     // Keep _defect.csv ignored even if an old personality.json has an empty ignore list.
-    var ignoreEndsWith = new List<string>(StringComparer.OrdinalIgnoreCase) { "_defect.csv" };
+    var ignoreEndsWith = new List<string> { "_defect.csv" };
     if (config.Csv.IgnoreFileNameEndsWith != null)
     {
         foreach (var item in config.Csv.IgnoreFileNameEndsWith)
@@ -119,7 +119,8 @@ static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<
 
 static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
 {
-    if (config.LogMonitor == null || !config.LogMonitor.Enabled) yield break;
+    var found = new List<string>();
+    if (config.LogMonitor == null || !config.LogMonitor.Enabled) return found;
 
     var drives = config.LogMonitor.DriveLetters != null && config.LogMonitor.DriveLetters.Count > 0
         ? config.LogMonitor.DriveLetters
@@ -144,13 +145,15 @@ static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
             var logDir = Path.Combine(root, relative);
             if (!Directory.Exists(logDir)) continue;
             var path = Path.Combine(logDir, fileName);
-            if (File.Exists(path)) yield return path;
+            if (File.Exists(path)) found.Add(path);
         }
         catch
         {
             // Ignore inaccessible drives/folders. This keeps polling E/F/G lightweight and safe.
         }
     }
+
+    return found;
 }
 
 static string BuildStatusLogFileName(string? format)
