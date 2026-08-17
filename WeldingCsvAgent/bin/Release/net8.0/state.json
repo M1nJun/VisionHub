@@ -1,0 +1,41 @@
+{
+  "Files": {
+    "C:\\Users\\leemi\\AppData\\Local\\Temp\\claude\\C--Users-leemi-Desktop-Github-Repositories-ProgramasParaLG-vision-version-manager\\eaf66ecb-389a-4ae6-be7e-a4869b199b71\\scratchpad\\WeldingAgentTest\\TestCsv\\#5-2 WELDING VISION(\u002B)_JF2_20260714.csv": {
+      "LastOffset": 451,
+      "LastLotId": "LOT-B",
+      "PendingPartialLine": "",
+      "Header": [
+        "NO",
+        "MODEL-ID",
+        "LOT-ID",
+        "CELL-ID",
+        "JUDGE",
+        "JUDGE-DEFECT",
+        "LOWER_SEPA_DL-JUDGE",
+        "UPPER_SEPA_DL-JUDGE",
+        "LOWER_IMAGE-PATH-1",
+        "LOWER_OVERLAY-IMAGE-PATH-1",
+        "LOWER_IMAGE-PATH-3",
+        "LOWER_OVERLAY-IMAGE-PATH-3",
+        "UPPER_IMAGE-PATH-1",
+        "UPPER_OVERLAY-IMAGE-PATH-1",
+        "UPPER_IMAGE-PATH-3",
+        "UPPER_OVERLAY-IMAGE-PATH-3"
+      ]
+    }
+  },
+  "LogFiles": {},
+  "TotalReadCount": 3,
+  "OkCount": 2,
+  "DefectCount": 1,
+  "CNgCount": 0,
+  "DlngCount": 1,
+  "NgCount": 0,
+  "UnknownJudgeCount": 0,
+  "CurrentLotId": "LOT-B",
+  "CurrentModelId": "JF2",
+  "LastNo": "1",
+  "LastCellId": "CELL-0001",
+  "LastCsvFile": "#5-2 WELDING VISION(\u002B)_JF2_20260714.csv",
+  "LastReadTime": "2026-07-14T14:51:58.5622863-04:00"
+}

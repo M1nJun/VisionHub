@@ -1,10 +1,19 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
+// Config is loaded before the generic host is even built, so a bad/missing
+// personality.json fails fast with a plain message instead of getting lost
+// in host startup machinery - and so the *same* resolved values (not raw
+// args, which under SCM are just whatever the service's binPath supplies)
+// flow into both the console and Windows Service run paths below.
 var configPath = args.Length > 0 ? args[0] : "personality.json";
 if (!File.Exists(configPath))
 {
@@ -24,54 +33,102 @@ var config = JsonSerializer.Deserialize<Personality>(File.ReadAllText(configPath
              ?? throw new InvalidOperationException("Invalid personality file.");
 
 var appDir = AppContext.BaseDirectory;
-var statePath = MakeAbsolute(config.StateFile ?? "state.json", appDir);
-var logPath = MakeAbsolute(config.LogFile ?? "agent.log", appDir);
+var statePath = AgentLogic.MakeAbsolute(config.StateFile ?? "state.json", appDir);
+var logPath = AgentLogic.MakeAbsolute(config.LogFile ?? "agent.log", appDir);
 Directory.CreateDirectory(Path.GetDirectoryName(statePath)!);
 Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
 var logger = new Logger(logPath);
 var state = AgentState.Load(statePath);
-using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(config.Receiver.TimeoutSeconds <= 0 ? 3 : config.Receiver.TimeoutSeconds) };
+var http = new HttpClient { Timeout = TimeSpan.FromSeconds(config.Receiver.TimeoutSeconds <= 0 ? 3 : config.Receiver.TimeoutSeconds) };
 
-var pollMs = config.PollIntervalMs <= 0 ? 1000 : config.PollIntervalMs;
-var agentStartupUtc = DateTimeOffset.UtcNow;
-var initializedLogFilesThisRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-var logFilesExistingAtStartup = new HashSet<string>(DiscoverStatusLogFiles(config).Select(Path.GetFullPath), StringComparer.OrdinalIgnoreCase);
-
-Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] WeldingCsvAgent started: {config.AgentId}");
+Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] WeldingCsvAgent starting: {config.AgentId}");
 Console.WriteLine($"Config: {Path.GetFullPath(configPath)}");
 Console.WriteLine($"State : {statePath}");
-Console.WriteLine("Mode  : change-driven CSV row events + Status.log alarm events");
-Console.WriteLine("Press Ctrl+C to stop.");
-logger.Info($"Started agent {config.AgentId}");
+Console.WriteLine("Mode  : change-driven CSV row events + Status.log alarm events + UDP heartbeat");
+logger.Info($"Starting agent {config.AgentId}");
 
-while (true)
+var builder = Host.CreateApplicationBuilder();
+// The generic host's own "Application started / Content root path / Press
+// Ctrl+C" banner would just be noise on top of the logging this agent
+// already does via Logger/Console.WriteLine.
+builder.Logging.ClearProviders();
+
+builder.Services.AddSingleton(new AgentContext
 {
-    try
+    Config = config,
+    Logger = logger,
+    State = state,
+    StatePath = statePath,
+    Http = http,
+    JsonOptions = jsonOptions,
+});
+builder.Services.AddHostedService<CsvLogWorker>();
+builder.Services.AddHostedService<HeartbeatWorker>();
+// Runs as a plain console app when double-clicked/launched directly (this
+// is a no-op then), and as a real Windows Service when started by SCM -
+// same exe, same binary, no separate build for either case.
+builder.Services.AddWindowsService(options => options.ServiceName = "VisionDashboardAgent");
+
+using var host = builder.Build();
+await host.RunAsync();
+return 0;
+
+// All the CSV/log/event-building logic lives in one static class (rather
+// than as top-level local functions) so it can be called from the
+// BackgroundService classes defined later in this file - C# only allows
+// top-level local functions to be called from other top-level statements,
+// not from separately-declared types.
+internal static class AgentLogic
+{
+
+// Small UDP "I'm alive" packet every few seconds, so the dashboard can tell
+// a quiet vision (no defects, steady OK count) apart from a dead agent.
+// UDP on purpose: heartbeats are frequent and disposable - losing one is
+// fine since the next arrives shortly after - so they don't need TCP's
+// delivery guarantees or a full HTTP request/response per beat.
+public static async Task HeartbeatLoop(Personality config, Logger logger, JsonSerializerOptions jsonOptions, CancellationToken stoppingToken)
+{
+    if (!config.Heartbeat.Enabled) return;
+    var intervalMs = config.Heartbeat.IntervalMs <= 0 ? 2000 : config.Heartbeat.IntervalMs;
+
+    using var udp = new UdpClient();
+    while (!stoppingToken.IsCancellationRequested)
     {
-        var files = DiscoverFiles(config).ToList();
-        foreach (var file in files)
+        try
         {
-            await ProcessCsvFile(file, config, state, http, logger, jsonOptions);
+            var payload = new
+            {
+                agentId = config.AgentId,
+                line = config.Line,
+                visionName = config.VisionName,
+                visionType = config.VisionType,
+                ts = DateTimeOffset.Now
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, jsonOptions));
+            await udp.SendAsync(bytes, config.Heartbeat.Host, config.Heartbeat.Port, stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+        catch (Exception ex)
+        {
+            logger.Warn("Heartbeat send failed: " + ex.Message);
         }
 
-        var logFiles = DiscoverStatusLogFiles(config).ToList();
-        foreach (var logFile in logFiles)
+        try
         {
-            await ProcessStatusLogFile(logFile, config, state, http, logger, jsonOptions, agentStartupUtc, initializedLogFilesThisRun, logFilesExistingAtStartup);
+            await Task.Delay(intervalMs, stoppingToken);
         }
-
-        state.Save(statePath);
+        catch (OperationCanceledException)
+        {
+            break;
+        }
     }
-    catch (Exception ex)
-    {
-        logger.Error("Main loop error: " + ex);
-    }
-
-    await Task.Delay(pollMs);
 }
 
-static IEnumerable<string> DiscoverFiles(Personality config)
+public static IEnumerable<string> DiscoverFiles(Personality config)
 {
     var folder = config.Csv.Folder;
     if (!Directory.Exists(folder)) yield break;
@@ -101,7 +158,7 @@ static IEnumerable<string> DiscoverFiles(Personality config)
     }
 }
 
-static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<string> ignoreContains)
+public static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<string> ignoreContains)
 {
     foreach (var suffix in ignoreEndsWith)
     {
@@ -117,7 +174,7 @@ static bool ShouldIgnoreFile(string fileName, List<string> ignoreEndsWith, List<
 }
 
 
-static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
+public static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
 {
     var found = new List<string>();
     if (config.LogMonitor == null || !config.LogMonitor.Enabled) return found;
@@ -156,14 +213,14 @@ static IEnumerable<string> DiscoverStatusLogFiles(Personality config)
     return found;
 }
 
-static string BuildStatusLogFileName(string? format)
+public static string BuildStatusLogFileName(string? format)
 {
     var fmt = string.IsNullOrWhiteSpace(format) ? "yyMMdd.Status.log" : format;
     return fmt.Replace("yyyyMMdd", DateTime.Now.ToString("yyyyMMdd"))
               .Replace("yyMMdd", DateTime.Now.ToString("yyMMdd"));
 }
 
-static async Task ProcessStatusLogFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions, DateTimeOffset agentStartupUtc, HashSet<string> initializedLogFilesThisRun, HashSet<string> logFilesExistingAtStartup)
+public static async Task ProcessStatusLogFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions, DateTimeOffset agentStartupUtc, HashSet<string> initializedLogFilesThisRun, HashSet<string> logFilesExistingAtStartup)
 {
     var fullPath = Path.GetFullPath(file);
     var fileState = state.GetLogFileState(file);
@@ -247,7 +304,7 @@ static async Task ProcessStatusLogFile(string file, Personality config, AgentSta
     }
 }
 
-static object BuildAlarmEvent(Personality config, string file, string rawLine, Logger logger)
+public static object BuildAlarmEvent(Personality config, string file, string rawLine, Logger logger)
 {
     var marker = string.IsNullOrWhiteSpace(config.LogMonitor.AlarmMarker) ? "[Alarm]" : config.LogMonitor.AlarmMarker;
     var timestampRaw = "";
@@ -312,7 +369,7 @@ static object BuildAlarmEvent(Personality config, string file, string rawLine, L
     };
 }
 
-static async Task ProcessCsvFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
+public static async Task ProcessCsvFile(string file, Personality config, AgentState state, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
 {
     var fileState = state.GetFileState(file);
     var encoding = GetEncoding(config.Csv.Encoding);
@@ -469,7 +526,7 @@ static async Task ProcessCsvFile(string file, Personality config, AgentState sta
     }
 }
 
-static object BuildCountDeltaEvent(RowBaseInfo b)
+public static object BuildCountDeltaEvent(RowBaseInfo b)
 {
     var eventId = EventIds.Make(b.AgentId, b.CsvFile, b.LotId, b.No, b.CellId, b.Judge);
     return new
@@ -493,7 +550,7 @@ static object BuildCountDeltaEvent(RowBaseInfo b)
     };
 }
 
-static object BuildUnknownJudgeEvent(RowBaseInfo b)
+public static object BuildUnknownJudgeEvent(RowBaseInfo b)
 {
     var eventId = EventIds.Make(b.AgentId, b.CsvFile, b.LotId, b.No, b.CellId, b.Judge, "UNKNOWN_JUDGE");
     return new
@@ -519,7 +576,7 @@ static object BuildUnknownJudgeEvent(RowBaseInfo b)
     };
 }
 
-static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string, int> index, RowBaseInfo b)
+public static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string, int> index, RowBaseInfo b)
 {
     var warnings = new List<string>();
     var usePath1 = config.JudgeRules.BacklightDefectsUsePath1.Contains(b.JudgeDefect, StringComparer.OrdinalIgnoreCase);
@@ -612,7 +669,7 @@ static object BuildDefectEvent(Personality config, CsvRow row, Dictionary<string
     };
 }
 
-static SideDetectionResult TryDetectSides(Personality config, CsvRow row, Dictionary<string, int> index, string judgeDefect, string colFormat)
+public static SideDetectionResult TryDetectSides(Personality config, CsvRow row, Dictionary<string, int> index, string judgeDefect, string colFormat)
 {
     var result = new SideDetectionResult { UsedColumnFormat = colFormat };
     foreach (var side in config.JudgeRules.Sides)
@@ -630,7 +687,7 @@ static SideDetectionResult TryDetectSides(Personality config, CsvRow row, Dictio
     return result;
 }
 
-static async Task<bool> SendEvent(object ev, Personality config, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
+public static async Task<bool> SendEvent(object ev, Personality config, HttpClient http, Logger logger, JsonSerializerOptions jsonOptions)
 {
     if (config.Options.DryRun)
     {
@@ -655,20 +712,22 @@ static async Task<bool> SendEvent(object ev, Personality config, HttpClient http
     }
 }
 
-static Encoding GetEncoding(string? name)
+public static Encoding GetEncoding(string? name)
 {
     if (string.IsNullOrWhiteSpace(name)) return new UTF8Encoding(false);
     return Encoding.GetEncoding(name);
 }
 
-static IEnumerable<string> SplitLines(string text)
+public static IEnumerable<string> SplitLines(string text)
 {
     using var reader = new StringReader(text);
     string? line;
     while ((line = reader.ReadLine()) != null) yield return line;
 }
 
-static string MakeAbsolute(string path, string baseDir) => Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);
+public static string MakeAbsolute(string path, string baseDir) => Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);
+
+} // end AgentLogic
 
 public readonly record struct RowBaseInfo(string AgentId, string Line, string VisionName, string VisionType, string CsvFile, string ModelId, string LotId, string No, string CellId, string Judge, string JudgeDefect);
 
@@ -708,6 +767,14 @@ public sealed class Personality
     public JudgeRules JudgeRules { get; set; } = new();
     public Dictionary<string, ImageColumnConfig> ImageColumns { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Options Options { get; set; } = new();
+    public HeartbeatConfig Heartbeat { get; set; } = new();
+}
+public sealed class HeartbeatConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string Host { get; set; } = "127.0.0.1";
+    public int Port { get; set; } = 6002;
+    public int IntervalMs { get; set; } = 2000;
 }
 public sealed class LogMonitorConfig
 {
@@ -892,4 +959,64 @@ public sealed class Logger
         Console.WriteLine(line);
         try { File.AppendAllText(_path, line + Environment.NewLine); } catch { }
     }
+}
+
+public sealed class AgentContext
+{
+    public required Personality Config { get; init; }
+    public required Logger Logger { get; init; }
+    public required AgentState State { get; init; }
+    public required string StatePath { get; init; }
+    public required HttpClient Http { get; init; }
+    public required JsonSerializerOptions JsonOptions { get; init; }
+}
+
+public sealed class CsvLogWorker(AgentContext ctx) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var pollMs = ctx.Config.PollIntervalMs <= 0 ? 1000 : ctx.Config.PollIntervalMs;
+        var agentStartupUtc = DateTimeOffset.UtcNow;
+        var initializedLogFilesThisRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var logFilesExistingAtStartup = new HashSet<string>(AgentLogic.DiscoverStatusLogFiles(ctx.Config).Select(Path.GetFullPath), StringComparer.OrdinalIgnoreCase);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var files = AgentLogic.DiscoverFiles(ctx.Config).ToList();
+                foreach (var file in files)
+                {
+                    await AgentLogic.ProcessCsvFile(file, ctx.Config, ctx.State, ctx.Http, ctx.Logger, ctx.JsonOptions);
+                }
+
+                var logFiles = AgentLogic.DiscoverStatusLogFiles(ctx.Config).ToList();
+                foreach (var logFile in logFiles)
+                {
+                    await AgentLogic.ProcessStatusLogFile(logFile, ctx.Config, ctx.State, ctx.Http, ctx.Logger, ctx.JsonOptions, agentStartupUtc, initializedLogFilesThisRun, logFilesExistingAtStartup);
+                }
+
+                ctx.State.Save(ctx.StatePath);
+            }
+            catch (Exception ex)
+            {
+                ctx.Logger.Error("Main loop error: " + ex);
+            }
+
+            try
+            {
+                await Task.Delay(pollMs, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+}
+
+public sealed class HeartbeatWorker(AgentContext ctx) : BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        AgentLogic.HeartbeatLoop(ctx.Config, ctx.Logger, ctx.JsonOptions, stoppingToken);
 }

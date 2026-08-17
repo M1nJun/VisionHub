@@ -79,5 +79,11 @@
     "alarmMarker": "[Alarm]",
     "startAtEndOnAgentStart": true,
     "encoding": "utf-8"
+  },
+  "heartbeat": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 6002,
+    "intervalMs": 2000
   }
 }

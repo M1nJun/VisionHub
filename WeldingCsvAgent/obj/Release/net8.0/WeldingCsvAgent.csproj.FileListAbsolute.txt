@@ -1,0 +1,15 @@
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\bin\Release\net8.0\WeldingCsvAgent.exe
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\bin\Release\net8.0\WeldingCsvAgent.deps.json
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\bin\Release\net8.0\WeldingCsvAgent.runtimeconfig.json
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\bin\Release\net8.0\WeldingCsvAgent.dll
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\bin\Release\net8.0\WeldingCsvAgent.pdb
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.AssemblyInfoInputs.cache
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.AssemblyInfo.cs
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.csproj.CoreCompileInputs.cache
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.sourcelink.json
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.dll
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\refint\WeldingCsvAgent.dll
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.pdb
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\WeldingCsvAgent.genruntimeconfig.cache
+C:\Users\leemi\Desktop\Github Repositories\VisionHub\WeldingCsvAgent\obj\Release\net8.0\ref\WeldingCsvAgent.dll

@@ -1,0 +1,9 @@
+{
+  "centralHost": "10.73.103.104",
+  "receiverPort": 5000,
+  "heartbeatPort": 6002,
+  "deployPath": "C:\\VisionDashboardAgent",
+  "serviceName": "VisionDashboardAgent",
+  "modelToken": "JF2",
+  "deployAccount": "AgentDeploy"
+}

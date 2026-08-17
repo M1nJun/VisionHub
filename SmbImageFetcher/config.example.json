@@ -1,0 +1,26 @@
+{
+  "db": {
+    "host": "127.0.0.1",
+    "port": 3307,
+    "user": "vision_app",
+    "password": "CHANGE_ME",
+    "database": "vision_dashboard"
+  },
+  "pcsFile": "pcs.json",
+  "localImageRoot": "D:\\VisionDashboardImages",
+  "notifyPort": 6001,
+  "smbCheckTimeoutSeconds": 3,
+  "pollIntervalSeconds": 10,
+  "maxFetchAttempts": 5,
+  "batchSize": 50,
+
+  "_comment_visionNameToPcsType": "Maps our DB's defects.vision_name to pcs.json's vision_type string, so we can look up the right inspection PC IP. Welding Anode/Cathode <-> (-)/(+) confirmed 2026-07 by the user. Lead/Lead Align/Pouch Align/Pinhole are best-guess and unverified until those agents are actually deployed.",
+  "visionNameToPcsType": {
+    "Welding Anode Vision": "Welding (-)",
+    "Welding Cathode Vision": "Welding (+)",
+    "Lead Vision": "Lead",
+    "Lead Align Vision": "Lead Align",
+    "Pouch Align Vision": "Pouch Align",
+    "Pouch Pinhole Vision": "Pinhole"
+  }
+}
