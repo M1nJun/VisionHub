@@ -34,6 +34,11 @@ public class SchemaInitializer implements CommandLineRunner {
         seedDefault("defect_rate_critical_pct", "0.01", "Defect rate % at/above which a card turns red");
         seedDefault("agent_offline_threshold_seconds", "10", "No heartbeat for this long -> Agent Offline");
         seedDefault("line_idle_threshold_seconds", "300", "Agent alive but no new cell for this long -> Line Idle");
+        seedDefault("dashboard_poll_interval_seconds", "5", "How often the browser re-fetches grid/detail data");
+        seedDefault("image_root_path", "D:\\VisionDashboardImages",
+                "Folder this server looks for fetched images under - set independently from SmbImageFetcher's "
+                        + "own config.json; keep them pointed at the same place by hand");
+        seedDefault("trend_bucket_minutes", "30", "Time bucket size for the defect rate trend chart");
     }
 
     private void seedDefault(String key, String value, String description) {

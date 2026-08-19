@@ -1,4 +1,113 @@
-# Welding CSV Agent + Central Test Receiver v12
+# Welding CSV Agent + Central Test Receiver v15
+
+## v15: Central PC relocation + third UI feedback round
+
+The central PC moved to a new machine permanently: new IP (`10.93.177.246`), fresh MySQL84 install on the
+default port 3306 this time (no more `MySQL80` conflict to dodge), `root`/`vision_app` both `1234`. Updated
+everywhere that baked in the old PC's address/port:
+- `AgentDeployer/config.json`: `centralHost` -> `10.93.177.246` (drives every future-generated
+  `personality.json`'s `receiver.eventUrl`/`heartbeat.host`).
+- `DashboardServer/central-pc-install/run-dashboard-server.ps1`: `DB_PORT` 3307->3306, `DB_PASSWORD` -> `1234`.
+- `SmbImageFetcher/config.example.json`: port 3307->3306 (the real `config.json` on the central PC needs the
+  same edit by hand - example files aren't deployed automatically).
+
+Since it's a genuinely fresh MySQL (not a migrated/restored one), every table gets recreated empty on first
+startup of each component (Receiver's `schema.sql`, DashboardServer's `dashboard_settings` seed) - so
+`dashboard_settings` (poll interval, color thresholds, `image_root_path`, trend bucket size) resets to
+hardcoded defaults too, not whatever had been tuned on the old machine. `image_root_path` in particular
+needs to be re-set to wherever SmbImageFetcher is saving images *on this new PC* - not deployment gap, just
+new-DB behavior.
+
+The two already-deployed agents (5-2 Welding Cathode/Anode) have the *old* central IP baked into their
+already-generated `personality.json` on those inspection PCs - re-running `Deploy-Agent.ps1` against them
+now that `config.json` is fixed regenerates and rewrites the correct one via the existing SMB path, cleaner
+than hand-editing files on each inspection PC.
+
+**Third UI feedback round**:
+- Image viewer canvas height: `360px` fixed -> `min(72vh, 640px)`, so images aren't cramped short while
+  plenty of horizontal room went unused.
+- Zoom changed from plain scroll to Ctrl/Cmd+scroll - a bare scroll over the image now falls through to
+  normal page scrolling instead of being captured by the viewer, matching how zoom works on maps/most
+  image viewers elsewhere on the web.
+- Vision name column headers now styled as cards (dark panel + border), matching the grid cells below
+  instead of floating as bare text.
+
+## v14: SmbImageFetcher hang fix + second UI feedback round
+
+**SmbImageFetcher bug**: reported symptom was the process staying up (no crash, no traceback, console window
+still open) but silently doing nothing after some point, and the receiver logging `dial tcp
+127.0.0.1:6001: ... actively refused it` for the notify call. Root cause: `shutil.copy2` has no timeout, and
+neither did the `pymysql.connect()` calls - a stalled network path (SMB transfer going quiet after the
+port-445 precheck already passed, or a MySQL query hanging) could block the single-threaded main loop
+forever with no way to notice, which reads as "still running, doing nothing" from the outside. Fixed:
+- `copy_with_timeout()` runs each `shutil.copy2` in its own daemon thread and gives up after
+  `copyTimeoutSeconds` (default 20s) if it doesn't finish - Python can't forcibly kill a blocked thread, so
+  this bounds the *wait*, not the copy itself, but that's enough to stop one stuck transfer from freezing
+  every other pending image behind it.
+- `connect()` now sets explicit `connect_timeout`/`read_timeout`/`write_timeout` (pymysql has none by
+  default).
+- The main loop's DB-reconnect path used to sit outside its own try/except - a failure *while recovering
+  from* a DB hiccup would raise unhandled and silently kill the whole process (daemon notify thread included).
+  Now wrapped, and logs instead of dying either way.
+- Added a heartbeat log line every ~12 polls so a future hang is visible immediately in the log (last
+  timestamp before the gap) instead of only inferable from "the console still looks open."
+- Verified the timeout fix directly: monkeypatched `shutil.copy2` to sleep 60s, confirmed
+  `copy_with_timeout(..., 2)` raises after exactly ~2s instead of hanging; confirmed a normal fast copy still
+  succeeds through the same wrapper.
+
+**Second UI feedback round**:
+- **Neon card style** instead of solid-fill backgrounds: dark card, glowing colored border
+  (`box-shadow`) + colored/glowing text, closer to the original mockup's "andon light on a dark HUD" look
+  than a flat colored tile.
+- **Vision names moved to column headers** (`.grid-header-row`, once per column) instead of repeated on
+  every one of the 66 cells - each cell now shows only defect rate % and a BM badge if count > 0.
+- **Detail page restructured** per the user's exact spec: stat tiles (added a `Defects` count tile, was
+  missing) → a new two-column "Defect Images" panel (`ImageViewer` left, clickable Top-5-Defects-as-filter
+  list right) → Defect Rate Trend → Recent Alarms → Lot History. Clicking a defect type in the list filters
+  the viewer to that type's images, newest-first.
+- **New `ImageViewer` component**: wheel-to-zoom (1x-6x), drag-to-pan when zoomed, prev/next (buttons +
+  arrow keys), main/overlay toggle. No image library pulled in - plain CSS `transform: translate() scale()`
+  driven by local component state.
+- **Real bug caught building the viewer**: `usePolling` hands back a new array reference on every poll
+  (5s default) even when the content hasn't changed, and `ImageViewer` had a `useEffect(() => resetToFirst,
+  [images])` - so it silently snapped back to image 1 every 5 seconds, making Next/Prev look broken. Fixed
+  by removing that effect and instead keying `<ImageViewer key={selectedType} ...>` from the parent, so
+  React only resets the viewer's internal state on an actual filter change (a real remount), not on every
+  routine poll. Verified: clicked Next, waited past a poll cycle, position held; clicked a different defect
+  type filter, viewer correctly reset to that type's newest image.
+
+## v13: Dashboard UI feedback round (from real central-PC testing)
+
+- **Defect rate trend chart**: new `VisionDetailDto.defectRateTrend`, bucketed off the `events` table (not
+  just `defects`) so each bucket has a real denominator - `WELDING_COUNT_DELTA`/`WELDING_DEFECT`/
+  `WELDING_UNKNOWN_JUDGE` counted together as "total", `WELDING_DEFECT` as "defects", rate = defects/total
+  per bucket, scoped to the current lot (`received_at >= vision_counters.lot_started_at`). Bucket size is a
+  Setting (`trend_bucket_minutes`, default 30). Rendered with a small hand-rolled inline-SVG line chart
+  (`TrendChart.tsx`) rather than pulling in a charting library.
+- **Polling interval is now a Setting** (`dashboard_poll_interval_seconds`) instead of hardcoded 5s -
+  `useDashboardConfig()` reads it (plus the warning/critical thresholds, so `TrendChart` can draw the same
+  reference lines the grid uses for card color) once per page mount.
+- **Image root is now independent of SmbImageFetcher's own config.json**, by design per the user: they want
+  to point the dashboard at wherever images actually are from the Settings page, separately from whatever
+  the fetcher's local config says, rather than one process's config silently controlling another's behavior.
+  New setting `image_root_path`. `ImageController` no longer trusts `defect_images.local_main_path` as an
+  absolute path - it takes only the filename from it and rejoins under
+  `{image_root_path}/{line}/{visionName}/`, the same shape `SmbImageFetcher.local_dest_paths()` builds.
+- **Defect-type filter** on the Recent Defect Images panel (client-side, options sourced from the same-lot
+  Top 5 Defects list already being fetched).
+- **Grid made drastically more compact** so all 66 cells fit on one screen without scrolling: cards dropped
+  from a multi-row stat block to a single name+rate row (~40px tall vs ~96px), tighter gaps, smaller stat
+  tiles/header. Detail info (OK/total, BM count, etc.) that used to live on the card is still one click away.
+- **Card colors made vivid/solid** instead of dark tinted backgrounds - the user's factory-floor "traffic
+  light from across the room" requirement wasn't met by the previous subtle dark-green/dark-red look.
+  Amber gets dark text for contrast, the other states get white text.
+- Renamed to "PKG Vision Dashboard", added the LG Energy Solution logo (fetched from
+  `lgensol.com/inc/images/symbol/ci_en.svg`, this being the company's own internal tool) to the header.
+
+Verified against a fresh local seed spanning a simulated 3-hour lot with a deliberately rising defect rate:
+trend chart correctly plotted the climb across ~7 buckets with proper time-axis labels, and manually forcing
+`vision_counters` to different rates confirmed all three card colors (green/amber/red) render distinctly
+and match the configured thresholds.
 
 ## v12: DashboardServer + dashboard-web (first web UI)
 

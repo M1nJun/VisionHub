@@ -55,12 +55,20 @@ export interface LotHistoryEntry {
   defectCount: number;
 }
 
+export interface TrendPoint {
+  bucketStart: string;
+  totalCount: number;
+  defectCount: number;
+  defectRatePct: number;
+}
+
 export interface VisionDetail {
   summary: VisionCell;
   topDefects: TopDefect[];
   recentDefects: RecentDefect[];
   recentAlarms: AlarmEntry[];
   lotHistory: LotHistoryEntry[];
+  defectRateTrend: TrendPoint[];
 }
 
 export interface Setting {

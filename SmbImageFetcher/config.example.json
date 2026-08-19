@@ -1,7 +1,7 @@
 {
   "db": {
     "host": "127.0.0.1",
-    "port": 3307,
+    "port": 3306,
     "user": "vision_app",
     "password": "CHANGE_ME",
     "database": "vision_dashboard"
@@ -10,6 +10,7 @@
   "localImageRoot": "D:\\VisionDashboardImages",
   "notifyPort": 6001,
   "smbCheckTimeoutSeconds": 3,
+  "copyTimeoutSeconds": 20,
   "pollIntervalSeconds": 10,
   "maxFetchAttempts": 5,
   "batchSize": 50,

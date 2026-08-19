@@ -14,7 +14,6 @@ import shutil
 import socket
 import sys
 import threading
-import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -51,6 +50,33 @@ def is_smb_reachable(ip, timeout_seconds):
             return True
     except OSError:
         return False
+
+
+def copy_with_timeout(src, dest, timeout_seconds):
+    """shutil.copy2 has no timeout of its own - if a copy stalls mid-transfer
+    (network hiccup, remote share going slow/unresponsive after the initial
+    port-445 check already passed), the whole single-threaded poll loop would
+    hang forever with no way to notice or recover. Running it in its own
+    daemon thread and giving up after timeout_seconds means one stuck copy
+    can never freeze the process again - the abandoned thread just sits idle
+    until it (maybe) finishes or the process exits; Python can't forcibly
+    kill a blocked thread, so this bounds *our* wait, not the copy itself."""
+    result = {}
+
+    def worker():
+        try:
+            shutil.copy2(src, dest)
+            result["ok"] = True
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout_seconds)
+    if t.is_alive():
+        raise TimeoutError(f"copy timed out after {timeout_seconds}s: {src} -> {dest}")
+    if "error" in result:
+        raise result["error"]
 
 
 def to_unc_path(local_path, ip):
@@ -174,6 +200,7 @@ def process_row(conn, row, cfg, ip_lookup):
         print(f"[FAIL] image_id={image_id} defect_id={defect_id}: {ip}:445 unreachable")
         return
 
+    copy_timeout = cfg.get("copyTimeoutSeconds", 20)
     try:
         unc_main = to_unc_path(row["main_image_path"], ip)
         unc_overlay = to_unc_path(row["overlay_image_path"], ip)
@@ -181,8 +208,8 @@ def process_row(conn, row, cfg, ip_lookup):
             cfg["localImageRoot"], line, vision_name, defect_id, side,
             row["main_image_path"], row["overlay_image_path"],
         )
-        shutil.copy2(unc_main, dest_main)
-        shutil.copy2(unc_overlay, dest_overlay)
+        copy_with_timeout(unc_main, dest_main, copy_timeout)
+        copy_with_timeout(unc_overlay, dest_overlay, copy_timeout)
         mark_fetched(conn, image_id, dest_main, dest_overlay)
         print(f"[OK]   image_id={image_id} defect_id={defect_id} side={side} -> {dest_main}")
     except Exception as e:
@@ -221,6 +248,10 @@ def start_notify_server(port, wake_event):
 
 
 def connect(db_cfg):
+    # Explicit timeouts on purpose: pymysql has none by default, so a stalled
+    # network path to MySQL (rare, but this process runs unattended for days)
+    # could otherwise hang a query forever - the same class of bug as the
+    # untimed shutil.copy2 calls below.
     return pymysql.connect(
         host=db_cfg["host"],
         port=db_cfg["port"],
@@ -228,6 +259,9 @@ def connect(db_cfg):
         password=db_cfg["password"],
         database=db_cfg["database"],
         autocommit=False,
+        connect_timeout=10,
+        read_timeout=20,
+        write_timeout=20,
     )
 
 
@@ -252,19 +286,34 @@ def main():
     notify_port = cfg.get("notifyPort", 6001)
     start_notify_server(notify_port, wake_event)
 
+    poll_count = 0
     while True:
+        # Everything below is inside one try/except - including the
+        # reconnect attempt, which used to sit outside it. A DB hiccup right
+        # as we tried to recover from a *previous* DB hiccup would otherwise
+        # raise unhandled and silently kill this whole process (the notify
+        # HTTP server is a daemon thread, so it dies with it) - the process
+        # would still show as "running" in a stale console until someone
+        # checked, exactly the "looks alive, does nothing" symptom this was
+        # written to prevent.
         try:
             rows = fetch_pending_rows(conn, cfg["maxFetchAttempts"], cfg["batchSize"])
             for row in rows:
                 process_row(conn, row, cfg, ip_lookup)
+            poll_count += 1
+            if poll_count % 12 == 0:  # ~ every 2 minutes at the default 10s interval
+                print(f"[POLL] alive, poll #{poll_count}, {len(rows)} row(s) last pass")
         except pymysql.err.OperationalError as e:
-            print(f"[DB] connection error, reconnecting: {e}")
+            print(f"[DB] connection error: {e}")
             try:
                 conn.close()
             except Exception:
                 pass
-            time.sleep(5)
-            conn = connect(cfg["db"])
+            try:
+                conn = connect(cfg["db"])
+                print("[DB] reconnected")
+            except Exception as reconnect_error:
+                print(f"[DB] reconnect failed, will retry next poll: {reconnect_error}")
         except Exception:
             traceback.print_exc()
 

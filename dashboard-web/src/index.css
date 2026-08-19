@@ -6,16 +6,15 @@
   --text-dim: #8fa1bd;
   --accent: #3b82f6;
 
-  --green: #22c55e;
-  --green-bg: #10231a;
-  --yellow: #eab308;
-  --yellow-bg: #2a2410;
-  --red: #ef4444;
-  --red-bg: #2a1414;
+  /* Neon look: dark card, bright glowing border/text in the status color -
+     not a filled background. Needs to read as an unambiguous traffic light
+     from across a factory floor while still looking like the rest of the
+     dark-HUD theme, not a flat colored tile. */
+  --green: #39ff88;
+  --yellow: #ffd23f;
+  --red: #ff3b5c;
   --blue: #38bdf8;
-  --blue-bg: #10202a;
   --grey: #64748b;
-  --grey-bg: #161f30;
 
   font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color-scheme: dark;
@@ -43,7 +42,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 24px;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--panel-border);
   background: var(--panel);
 }
@@ -58,6 +57,12 @@ a {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.brand-logo {
+  height: 20px;
+  width: auto;
+  display: block;
 }
 
 .app-header nav {
@@ -91,17 +96,42 @@ a {
 .status-dot.NOT_DEPLOYED { background: var(--grey); opacity: 0.5; }
 
 .page {
-  padding: 20px 24px;
-  max-width: 1600px;
+  padding: 12px 20px;
+  max-width: 1900px;
   margin: 0 auto;
 }
 
-.grid-row {
+.grid-header-row, .grid-row {
   display: grid;
-  grid-template-columns: 64px repeat(6, 1fr);
-  gap: 10px;
-  margin-bottom: 10px;
+  grid-template-columns: 46px repeat(6, 1fr);
+  gap: 5px;
+}
+
+.grid-header-row {
+  margin-bottom: 6px;
+}
+
+.grid-row {
+  margin-bottom: 5px;
   align-items: stretch;
+}
+
+.vision-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  min-height: 32px;
+  padding: 4px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .line-label {
@@ -109,65 +139,79 @@ a {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-dim);
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border-radius: 6px;
+  line-height: 1.2;
 }
 
+/* Neon look: dark card, glowing colored border + text-shadow, no filled
+   background - meant to pop against the dark theme like an andon light
+   rather than read as a flat colored tile. */
 .vision-card {
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--panel-border);
-  padding: 10px 12px;
+  background: var(--panel);
+  padding: 4px 9px;
   cursor: pointer;
-  transition: transform 0.08s ease, border-color 0.15s ease;
+  transition: transform 0.08s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
 }
 
 .vision-card:hover {
   transform: translateY(-1px);
-  border-color: var(--accent);
 }
 
-.vision-card.color-GREEN { background: var(--green-bg); }
-.vision-card.color-YELLOW { background: var(--yellow-bg); }
-.vision-card.color-RED { background: var(--red-bg); }
-.vision-card.color-BLUE { background: var(--blue-bg); }
-.vision-card.color-GREY { background: var(--grey-bg); opacity: 0.75; }
-
-.vision-card .top-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  font-weight: 600;
+.vision-card.color-GREEN {
+  border-color: var(--green);
+  box-shadow: 0 0 6px -1px var(--green), inset 0 0 10px -4px var(--green);
+}
+.vision-card.color-YELLOW {
+  border-color: var(--yellow);
+  box-shadow: 0 0 6px -1px var(--yellow), inset 0 0 10px -4px var(--yellow);
+}
+.vision-card.color-RED {
+  border-color: var(--red);
+  box-shadow: 0 0 8px -1px var(--red), inset 0 0 12px -4px var(--red);
+}
+.vision-card.color-BLUE {
+  border-color: var(--blue);
+  box-shadow: 0 0 6px -1px var(--blue), inset 0 0 10px -4px var(--blue);
+}
+.vision-card.color-GREY {
+  opacity: 0.55;
 }
 
-.vision-card .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.vision-card.color-GREEN .defect-rate { color: var(--green); text-shadow: 0 0 8px rgba(57, 255, 136, 0.6); }
+.vision-card.color-YELLOW .defect-rate { color: var(--yellow); text-shadow: 0 0 8px rgba(255, 210, 63, 0.6); }
+.vision-card.color-RED .defect-rate { color: var(--red); text-shadow: 0 0 8px rgba(255, 59, 92, 0.7); }
+.vision-card.color-BLUE .defect-rate { color: var(--blue); text-shadow: 0 0 8px rgba(56, 189, 248, 0.6); }
+
+.vision-card .defect-rate {
+  font-size: 15px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
-.vision-card .defect-rate {
-  font-size: 18px;
+.vision-card .bm-badge {
+  font-size: 10px;
   font-weight: 700;
-}
-
-.vision-card .metrics-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text-dim);
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  border-radius: 4px;
+  padding: 0 4px;
+  text-shadow: 0 0 6px rgba(255, 210, 63, 0.7);
 }
 
 .vision-card .not-deployed-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-dim);
   margin: auto 0;
   text-align: center;
@@ -176,9 +220,9 @@ a {
 .legend {
   display: flex;
   gap: 18px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-dim);
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .legend-item {
@@ -217,14 +261,14 @@ a {
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .stat-tile {
   background: var(--bg);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
-  padding: 12px;
+  padding: 8px 12px;
 }
 
 .stat-tile .label {
@@ -233,9 +277,9 @@ a {
 }
 
 .stat-tile .value {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .back-link {
@@ -338,4 +382,126 @@ th {
   color: var(--text-dim);
   text-align: center;
   padding: 40px 0;
+}
+
+.viewer-defects-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .viewer-defects-row { grid-template-columns: 1fr; }
+}
+
+.defect-type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.defect-type-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.defect-type-row:hover {
+  background: var(--bg);
+}
+
+.defect-type-row.selected {
+  border-color: var(--accent);
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.defect-type-row .count {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.defect-type-row.selected .count {
+  color: var(--accent);
+}
+
+.image-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.viewer-canvas {
+  position: relative;
+  height: min(72vh, 640px);
+  background: #000;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+.viewer-canvas.zoomed {
+  cursor: grab;
+}
+.viewer-canvas:active {
+  cursor: grabbing;
+}
+
+.viewer-canvas img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  transition: transform 0.02s linear;
+}
+
+.viewer-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.viewer-controls button {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.viewer-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.viewer-controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.viewer-controls label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+}
+
+.viewer-caption {
+  font-size: 12px;
+  color: var(--text-dim);
 }

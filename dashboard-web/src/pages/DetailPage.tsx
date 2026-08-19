@@ -1,8 +1,10 @@
+import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { fetchDetail } from "../api";
 import { usePolling } from "../usePolling";
-
-const POLL_MS = 5000;
+import { useDashboardConfig } from "../useDashboardConfig";
+import TrendChart from "../components/TrendChart";
+import ImageViewer, { type FlatImage } from "../components/ImageViewer";
 
 function fmtPct(v: number | null): string {
   return v === null ? "-" : `${v.toFixed(3)}%`;
@@ -17,13 +19,43 @@ function fmtTime(v: string | null): string {
   return new Date(v).toLocaleString();
 }
 
+const ALL = "ALL";
+
 export default function DetailPage() {
   const { line = "", visionName = "" } = useParams();
+  const { pollMs, warningPct, criticalPct } = useDashboardConfig();
   const { data, error, loading } = usePolling(
     () => fetchDetail(line, visionName),
-    POLL_MS,
-    [line, visionName]
+    pollMs,
+    [line, visionName, pollMs]
   );
+  const [selectedType, setSelectedType] = useState<string>(ALL);
+
+  // Backend already orders recentDefects newest-first; flattening preserves
+  // that order well enough (a defect's own side-images have no meaningful
+  // order between each other).
+  const flatImages = useMemo<FlatImage[]>(() => {
+    if (!data) return [];
+    return data.recentDefects.flatMap((d) =>
+      d.images.length > 0
+        ? d.images.map((img) => ({
+            defectId: d.defectId,
+            judgeDefect: d.judgeDefect,
+            judge: d.judge,
+            side: img.side,
+            occurredAt: d.occurredAt,
+            mainUrl: img.mainUrl,
+            overlayUrl: img.overlayUrl,
+            fetchStatus: img.fetchStatus,
+          }))
+        : []
+    );
+  }, [data]);
+
+  const filteredImages = useMemo(() => {
+    if (selectedType === ALL) return flatImages;
+    return flatImages.filter((img) => img.judgeDefect === selectedType);
+  }, [flatImages, selectedType]);
 
   if (loading && !data) {
     return <div className="page empty-state">Loading...</div>;
@@ -35,7 +67,7 @@ export default function DetailPage() {
     return null;
   }
 
-  const { summary, topDefects, recentDefects, recentAlarms, lotHistory } = data;
+  const { summary, topDefects, recentAlarms, lotHistory, defectRateTrend } = data;
 
   return (
     <div className="page">
@@ -62,6 +94,10 @@ export default function DetailPage() {
           <div className="value" style={{ fontSize: 15 }}>{fmtInt(summary.totalCount)} / {fmtInt(summary.okCount)}</div>
         </div>
         <div className="stat-tile">
+          <div className="label">Defects</div>
+          <div className="value">{fmtInt(summary.defectCount)}</div>
+        </div>
+        <div className="stat-tile">
           <div className="label">Defect Rate</div>
           <div className="value">{fmtPct(summary.defectRatePct)}</div>
         </div>
@@ -80,59 +116,39 @@ export default function DetailPage() {
       </div>
 
       <div className="panel">
-        <h2>Top 5 Defects (current lot)</h2>
-        {topDefects.length === 0 ? (
-          <div className="empty-state">No defects this lot.</div>
-        ) : (
-          <table>
-            <thead><tr><th>Defect Type</th><th>Count</th></tr></thead>
-            <tbody>
+        <h2>Defect Images</h2>
+        <div className="viewer-defects-row">
+          <ImageViewer key={selectedType} images={filteredImages} />
+          <div>
+            <div className="defect-type-list">
+              <div
+                className={`defect-type-row ${selectedType === ALL ? "selected" : ""}`}
+                onClick={() => setSelectedType(ALL)}
+              >
+                <span>All defect types</span>
+                <span className="count">{flatImages.length}</span>
+              </div>
               {topDefects.map((d) => (
-                <tr key={d.judgeDefect}>
-                  <td>{d.judgeDefect}</td>
-                  <td>{d.count}</td>
-                </tr>
+                <div
+                  key={d.judgeDefect}
+                  className={`defect-type-row ${selectedType === d.judgeDefect ? "selected" : ""}`}
+                  onClick={() => setSelectedType(d.judgeDefect)}
+                >
+                  <span>{d.judgeDefect}</span>
+                  <span className="count">{d.count}</span>
+                </div>
               ))}
-            </tbody>
-          </table>
-        )}
+              {topDefects.length === 0 && (
+                <div className="empty-state" style={{ padding: "12px 0" }}>No defects this lot.</div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="panel">
-        <h2>Recent Defect Images</h2>
-        {recentDefects.length === 0 ? (
-          <div className="empty-state">No defects recorded yet.</div>
-        ) : (
-          <div className="image-grid">
-            {recentDefects.flatMap((d) =>
-              d.images.length > 0
-                ? d.images.map((img) => (
-                    <div className="image-card" key={`${d.defectId}-${img.side}`}>
-                      {img.mainUrl ? (
-                        <img src={img.mainUrl} alt={`${d.judgeDefect} ${img.side}`} loading="lazy" />
-                      ) : (
-                        <div style={{ aspectRatio: "4/3", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
-                          {img.fetchStatus === "pending" ? "Fetching..." : "Unavailable"}
-                        </div>
-                      )}
-                      <div className="caption">
-                        {d.judgeDefect} &middot; {img.side} &middot; {fmtTime(d.occurredAt)}
-                      </div>
-                    </div>
-                  ))
-                : [
-                    <div className="image-card" key={d.defectId}>
-                      <div style={{ aspectRatio: "4/3", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
-                        No image
-                      </div>
-                      <div className="caption">
-                        {d.judgeDefect} &middot; {d.judge} &middot; {fmtTime(d.occurredAt)}
-                      </div>
-                    </div>,
-                  ]
-            )}
-          </div>
-        )}
+        <h2>Defect Rate Trend (current lot)</h2>
+        <TrendChart points={defectRateTrend} warningPct={warningPct} criticalPct={criticalPct} />
       </div>
 
       <div className="panel">

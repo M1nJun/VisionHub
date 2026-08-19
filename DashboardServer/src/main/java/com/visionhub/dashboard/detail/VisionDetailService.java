@@ -2,6 +2,7 @@ package com.visionhub.dashboard.detail;
 
 import com.visionhub.dashboard.grid.GridService;
 import com.visionhub.dashboard.grid.VisionCellDto;
+import com.visionhub.dashboard.settings.SettingsService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,14 +25,17 @@ public class VisionDetailService {
 
     private final JdbcTemplate jdbc;
     private final GridService gridService;
+    private final SettingsService settings;
     private final String contextPath;
 
     public VisionDetailService(
             JdbcTemplate jdbc,
             GridService gridService,
+            SettingsService settings,
             @Value("${server.servlet.context-path:}") String contextPath) {
         this.jdbc = jdbc;
         this.gridService = gridService;
+        this.settings = settings;
         this.contextPath = contextPath;
     }
 
@@ -42,7 +46,7 @@ public class VisionDetailService {
         }
         if (summary.agentId() == null) {
             // NOT_DEPLOYED: no agent has ever reported in, nothing further to query.
-            return new VisionDetailDto(summary, List.of(), List.of(), List.of(), List.of());
+            return new VisionDetailDto(summary, List.of(), List.of(), List.of(), List.of(), List.of());
         }
 
         String agentId = summary.agentId();
@@ -51,8 +55,43 @@ public class VisionDetailService {
                 getTopDefects(agentId, summary.currentLotId()),
                 getRecentDefects(agentId),
                 getRecentAlarms(agentId),
-                getLotHistory(agentId)
+                getLotHistory(agentId),
+                getDefectRateTrend(agentId)
         );
+    }
+
+    private List<VisionDetailDto.TrendPoint> getDefectRateTrend(String agentId) {
+        Instant lotStartedAt = jdbc.query(
+                "SELECT lot_started_at FROM vision_counters WHERE agent_id = ?",
+                (rs, rowNum) -> toInstant(rs.getTimestamp("lot_started_at")), agentId)
+                .stream().findFirst().orElse(null);
+        if (lotStartedAt == null) {
+            return List.of();
+        }
+
+        int bucketMinutes = settings.getInt("trend_bucket_minutes", 30);
+        long bucketSeconds = bucketMinutes * 60L;
+
+        return jdbc.query("""
+                SELECT
+                  FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(received_at) / ?) * ?) AS bucket_start,
+                  SUM(CASE WHEN event_type = 'WELDING_DEFECT' THEN 1 ELSE 0 END) AS defect_count,
+                  COUNT(*) AS total_count
+                FROM events
+                WHERE agent_id = ?
+                  AND event_type IN ('WELDING_COUNT_DELTA','WELDING_DEFECT','WELDING_UNKNOWN_JUDGE')
+                  AND received_at >= ?
+                GROUP BY bucket_start
+                ORDER BY bucket_start
+                """,
+                (rs, rowNum) -> {
+                    long total = rs.getLong("total_count");
+                    long defects = rs.getLong("defect_count");
+                    double rate = total > 0 ? 100.0 * defects / total : 0.0;
+                    return new VisionDetailDto.TrendPoint(
+                            toInstant(rs.getTimestamp("bucket_start")), total, defects, rate);
+                },
+                bucketSeconds, bucketSeconds, agentId, Timestamp.from(lotStartedAt));
     }
 
     private List<VisionDetailDto.TopDefect> getTopDefects(String agentId, String currentLotId) {

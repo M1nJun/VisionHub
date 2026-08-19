@@ -8,8 +8,9 @@ export default function App() {
     <BrowserRouter basename="/dashboard">
       <div className="app-header">
         <div className="brand">
-          <Link to="/" style={{ textDecoration: "none", color: "inherit" }}>
-            <h1>FACTORY VISION DASHBOARD</h1>
+          <Link to="/" style={{ textDecoration: "none", color: "inherit", display: "flex", alignItems: "center", gap: 12 }}>
+            <img src="/dashboard/lg-logo.svg" alt="LG Energy Solution" className="brand-logo" />
+            <h1>PKG VISION DASHBOARD</h1>
           </Link>
         </div>
         <nav>

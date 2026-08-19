@@ -34,14 +34,18 @@ public class SettingsService {
 
     /** Read fresh on every call (no caching) - settings changes take effect on the next API request, no restart. */
     public double getDouble(String key, double fallback) {
-        return getRaw(key).map(Double::parseDouble).orElse(fallback);
+        return getRawOptional(key).map(Double::parseDouble).orElse(fallback);
     }
 
     public int getInt(String key, int fallback) {
-        return getRaw(key).map(Integer::parseInt).orElse(fallback);
+        return getRawOptional(key).map(Integer::parseInt).orElse(fallback);
     }
 
-    private Optional<String> getRaw(String key) {
+    public String getRaw(String key, String fallback) {
+        return getRawOptional(key).orElse(fallback);
+    }
+
+    private Optional<String> getRawOptional(String key) {
         List<String> rows = jdbc.query(
                 "SELECT setting_value FROM dashboard_settings WHERE setting_key = ?",
                 (rs, rowNum) -> rs.getString(1), key);

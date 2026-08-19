@@ -10,9 +10,14 @@ public record VisionDetailDto(
         List<TopDefect> topDefects,
         List<RecentDefect> recentDefects,
         List<AlarmEntry> recentAlarms,
-        List<LotHistoryEntry> lotHistory
+        List<LotHistoryEntry> lotHistory,
+        List<TrendPoint> defectRateTrend
 ) {
     public record TopDefect(String judgeDefect, long count) {
+    }
+
+    /** One time bucket of the defect-rate-over-time chart (current lot only). */
+    public record TrendPoint(Instant bucketStart, long totalCount, long defectCount, double defectRatePct) {
     }
 
     public record RecentDefect(
