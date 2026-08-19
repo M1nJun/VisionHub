@@ -18,7 +18,10 @@ import java.util.Map;
 
 @Service
 public class VisionDetailService {
-    private static final int TOP_DEFECTS_LIMIT = 5;
+    // Not really a "top N" anymore now that the images pane groups this by judge
+    // (NG/DLNG/C-NG) and lists every defect type as a filter option under each -
+    // kept generous rather than actually limiting to a top few.
+    private static final int TOP_DEFECTS_LIMIT = 100;
     private static final int RECENT_DEFECTS_LIMIT = 20;
     private static final int RECENT_ALARMS_LIMIT = 20;
     private static final int LOT_HISTORY_LIMIT = 10;
@@ -99,14 +102,15 @@ public class VisionDetailService {
             return List.of();
         }
         return jdbc.query("""
-                SELECT judge_defect, COUNT(*) AS c
+                SELECT judge, judge_defect, COUNT(*) AS c
                 FROM defects
                 WHERE agent_id = ? AND lot_id = ?
-                GROUP BY judge_defect
+                GROUP BY judge, judge_defect
                 ORDER BY c DESC
                 LIMIT ?
                 """,
-                (rs, rowNum) -> new VisionDetailDto.TopDefect(rs.getString("judge_defect"), rs.getLong("c")),
+                (rs, rowNum) -> new VisionDetailDto.TopDefect(
+                        rs.getString("judge"), rs.getString("judge_defect"), rs.getLong("c")),
                 agentId, currentLotId, TOP_DEFECTS_LIMIT);
     }
 
@@ -115,7 +119,7 @@ public class VisionDetailService {
         Map<Long, VisionDetailDto.RecentDefect> byId = new LinkedHashMap<>();
 
         jdbc.query("""
-                SELECT id, judge, judge_defect, defect_sides, received_at
+                SELECT id, judge, judge_defect, cell_id, defect_sides, received_at
                 FROM defects
                 WHERE agent_id = ?
                 ORDER BY received_at DESC
@@ -127,6 +131,7 @@ public class VisionDetailService {
                     id,
                     rs.getString("judge"),
                     rs.getString("judge_defect"),
+                    rs.getString("cell_id"),
                     rs.getString("defect_sides"),
                     toInstant(rs.getTimestamp("received_at")),
                     new ArrayList<>()

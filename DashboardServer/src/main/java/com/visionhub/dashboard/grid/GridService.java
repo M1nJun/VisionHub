@@ -45,7 +45,7 @@ public class GridService {
                 SELECT
                     a.agent_id, a.line, a.vision_name,
                     a.current_lot_id, a.current_model_id, a.last_event_at, a.last_heartbeat_at,
-                    vc.total_count, vc.ok_count, vc.defect_count,
+                    vc.total_count, vc.ok_count, vc.ng_count, vc.dlng_count, vc.cng_count,
                     (SELECT COUNT(*) FROM alarms al
                         WHERE al.agent_id = a.agent_id AND al.alarm_time >= vc.lot_started_at) AS bm_count
                 FROM agents a
@@ -79,7 +79,9 @@ public class GridService {
         row.lastHeartbeatAt = toInstant(rs.getTimestamp("last_heartbeat_at"));
         row.totalCount = nullableLong(rs, "total_count");
         row.okCount = nullableLong(rs, "ok_count");
-        row.defectCount = nullableLong(rs, "defect_count");
+        row.ngCount = nullableLong(rs, "ng_count");
+        row.dlngCount = nullableLong(rs, "dlng_count");
+        row.cngCount = nullableLong(rs, "cng_count");
         row.bmCount = nullableInt(rs, "bm_count");
         return row;
     }
@@ -88,7 +90,7 @@ public class GridService {
                                      int offlineSec, int idleSec, double warnPct, double critPct) {
         if (row == null) {
             return new VisionCellDto(slot.line(), slot.visionName(), "NOT_DEPLOYED", "GREY",
-                    null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         String status;
@@ -100,25 +102,35 @@ public class GridService {
             status = "RUNNING";
         }
 
-        Double defectRatePct = null;
+        Double ngRatePct = null;
+        Double dlngRatePct = null;
+        Double cngRatePct = null;
         if (row.totalCount != null && row.totalCount > 0) {
-            long defects = row.defectCount == null ? 0 : row.defectCount;
-            defectRatePct = 100.0 * defects / row.totalCount;
+            long ng = row.ngCount == null ? 0 : row.ngCount;
+            long dlng = row.dlngCount == null ? 0 : row.dlngCount;
+            long cng = row.cngCount == null ? 0 : row.cngCount;
+            ngRatePct = 100.0 * ng / row.totalCount;
+            dlngRatePct = 100.0 * dlng / row.totalCount;
+            cngRatePct = 100.0 * cng / row.totalCount;
         }
 
+        // Color-coding (and the warn/crit settings) is driven by NG rate only -
+        // that's what "defect rate" means on the floor; DLNG/CNG are separate
+        // figures shown alongside it, not folded into the traffic light.
         String color = switch (status) {
             case "OFFLINE" -> "GREY";
             case "IDLE" -> "BLUE";
             default -> {
-                if (defectRatePct != null && defectRatePct >= critPct) yield "RED";
-                if (defectRatePct != null && defectRatePct >= warnPct) yield "YELLOW";
+                if (ngRatePct != null && ngRatePct >= critPct) yield "RED";
+                if (ngRatePct != null && ngRatePct >= warnPct) yield "YELLOW";
                 yield "GREEN";
             }
         };
 
         return new VisionCellDto(slot.line(), slot.visionName(), status, color, row.agentId,
-                row.currentLotId, row.currentModelId, row.totalCount, row.okCount, row.defectCount,
-                defectRatePct, row.bmCount, row.lastEventAt, row.lastHeartbeatAt);
+                row.currentLotId, row.currentModelId, row.totalCount, row.okCount,
+                row.ngCount, row.dlngCount, row.cngCount,
+                ngRatePct, dlngRatePct, cngRatePct, row.bmCount, row.lastEventAt, row.lastHeartbeatAt);
     }
 
     private long secondsSince(Instant t, Instant now) {
@@ -142,7 +154,7 @@ public class GridService {
     private static class AgentRow {
         String agentId, line, visionName, currentLotId, currentModelId;
         Instant lastEventAt, lastHeartbeatAt;
-        Long totalCount, okCount, defectCount;
+        Long totalCount, okCount, ngCount, dlngCount, cngCount;
         Integer bmCount;
     }
 }

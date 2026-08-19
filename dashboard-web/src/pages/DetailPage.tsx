@@ -21,6 +21,15 @@ function fmtTime(v: string | null): string {
 
 const ALL = "ALL";
 
+// t.key matches the raw `judge` value the backend/DB use (note the hyphen on
+// C-NG); t.cls is the short form used for CSS class names / display, shared
+// with the equivalent tabs on the grid page's Top-ranked panel.
+const JUDGE_TABS: { key: string; cls: string }[] = [
+  { key: "NG", cls: "NG" },
+  { key: "DLNG", cls: "DLNG" },
+  { key: "C-NG", cls: "CNG" },
+];
+
 export default function DetailPage() {
   const { line = "", visionName = "" } = useParams();
   const { pollMs, warningPct, criticalPct } = useDashboardConfig();
@@ -29,6 +38,7 @@ export default function DetailPage() {
     pollMs,
     [line, visionName, pollMs]
   );
+  const [selectedJudge, setSelectedJudge] = useState<string>("NG");
   const [selectedType, setSelectedType] = useState<string>(ALL);
 
   // Backend already orders recentDefects newest-first; flattening preserves
@@ -42,6 +52,7 @@ export default function DetailPage() {
             defectId: d.defectId,
             judgeDefect: d.judgeDefect,
             judge: d.judge,
+            cellId: d.cellId,
             side: img.side,
             occurredAt: d.occurredAt,
             mainUrl: img.mainUrl,
@@ -52,10 +63,20 @@ export default function DetailPage() {
     );
   }, [data]);
 
+  const imagesForJudge = useMemo(
+    () => flatImages.filter((img) => img.judge === selectedJudge),
+    [flatImages, selectedJudge]
+  );
+
   const filteredImages = useMemo(() => {
-    if (selectedType === ALL) return flatImages;
-    return flatImages.filter((img) => img.judgeDefect === selectedType);
-  }, [flatImages, selectedType]);
+    if (selectedType === ALL) return imagesForJudge;
+    return imagesForJudge.filter((img) => img.judgeDefect === selectedType);
+  }, [imagesForJudge, selectedType]);
+
+  function selectJudge(judge: string) {
+    setSelectedJudge(judge);
+    setSelectedType(ALL);
+  }
 
   if (loading && !data) {
     return <div className="page empty-state">Loading...</div>;
@@ -94,12 +115,16 @@ export default function DetailPage() {
           <div className="value" style={{ fontSize: 15 }}>{fmtInt(summary.totalCount)} / {fmtInt(summary.okCount)}</div>
         </div>
         <div className="stat-tile">
-          <div className="label">Defects</div>
-          <div className="value">{fmtInt(summary.defectCount)}</div>
+          <div className="label">Defect Rate (NG)</div>
+          <div className="value">{fmtPct(summary.ngRatePct)} <span className="value-count">({fmtInt(summary.ngCount)})</span></div>
         </div>
         <div className="stat-tile">
-          <div className="label">Defect Rate</div>
-          <div className="value">{fmtPct(summary.defectRatePct)}</div>
+          <div className="label">DLNG Rate</div>
+          <div className="value">{fmtPct(summary.dlngRatePct)} <span className="value-count">({fmtInt(summary.dlngCount)})</span></div>
+        </div>
+        <div className="stat-tile">
+          <div className="label">CNG Rate</div>
+          <div className="value">{fmtPct(summary.cngRatePct)} <span className="value-count">({fmtInt(summary.cngCount)})</span></div>
         </div>
         <div className="stat-tile">
           <div className="label">BM Events (this lot)</div>
@@ -117,18 +142,29 @@ export default function DetailPage() {
 
       <div className="panel">
         <h2>Defect Images</h2>
+        <div className="judge-tab-row">
+          {JUDGE_TABS.map((t) => (
+            <div
+              key={t.key}
+              className={`judge-tab ${t.cls} ${selectedJudge === t.key ? "selected" : ""}`}
+              onClick={() => selectJudge(t.key)}
+            >
+              {t.cls}
+            </div>
+          ))}
+        </div>
         <div className="viewer-defects-row">
-          <ImageViewer key={selectedType} images={filteredImages} />
+          <ImageViewer key={`${selectedJudge}-${selectedType}`} images={filteredImages} />
           <div>
             <div className="defect-type-list">
               <div
                 className={`defect-type-row ${selectedType === ALL ? "selected" : ""}`}
                 onClick={() => setSelectedType(ALL)}
               >
-                <span>All defect types</span>
-                <span className="count">{flatImages.length}</span>
+                <span>All {JUDGE_TABS.find((t) => t.key === selectedJudge)?.cls} types</span>
+                <span className="count">{imagesForJudge.length}</span>
               </div>
-              {topDefects.map((d) => (
+              {topDefects.filter((d) => d.judge === selectedJudge).map((d) => (
                 <div
                   key={d.judgeDefect}
                   className={`defect-type-row ${selectedType === d.judgeDefect ? "selected" : ""}`}
@@ -138,7 +174,7 @@ export default function DetailPage() {
                   <span className="count">{d.count}</span>
                 </div>
               ))}
-              {topDefects.length === 0 && (
+              {topDefects.filter((d) => d.judge === selectedJudge).length === 0 && (
                 <div className="empty-state" style={{ padding: "12px 0" }}>No defects this lot.</div>
               )}
             </div>

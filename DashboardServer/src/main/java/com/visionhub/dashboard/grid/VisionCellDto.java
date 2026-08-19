@@ -4,7 +4,12 @@ import java.time.Instant;
 
 /**
  * status: NOT_DEPLOYED | OFFLINE | IDLE | RUNNING
- * colorLevel: GREY (not deployed / offline) | BLUE (idle) | GREEN | YELLOW | RED
+ * colorLevel: GREY (not deployed / offline) | BLUE (idle) | GREEN | YELLOW | RED (driven by ngRatePct)
+ *
+ * NG/DLNG/C-NG are tracked as three separate judgements (Welding Cathode/Anode
+ * report all three; every other vision type only ever produces NG). "Defect
+ * rate" as the term is used on the floor means the NG rate specifically -
+ * DLNG/CNG are their own separate rates, not folded into it.
  */
 public record VisionCellDto(
         String line,
@@ -16,8 +21,12 @@ public record VisionCellDto(
         String currentModelId,
         Long totalCount,
         Long okCount,
-        Long defectCount,
-        Double defectRatePct,
+        Long ngCount,
+        Long dlngCount,
+        Long cngCount,
+        Double ngRatePct,
+        Double dlngRatePct,
+        Double cngRatePct,
         Integer bmCount,
         Instant lastEventAt,
         Instant lastHeartbeatAt

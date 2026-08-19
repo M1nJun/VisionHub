@@ -4,6 +4,7 @@ export interface FlatImage {
   defectId: number;
   judgeDefect: string;
   judge: string;
+  cellId: string | null;
   side: string;
   occurredAt: string;
   mainUrl: string | null;
@@ -138,7 +139,8 @@ export default function ImageViewer({ images }: Props) {
       </div>
 
       <div className="viewer-caption">
-        {current.judgeDefect} &middot; {current.judge} &middot; {current.side} &middot;{" "}
+        {current.judgeDefect} &middot; {current.judge} &middot; {current.side}
+        {current.cellId ? <> &middot; Cell {current.cellId}</> : null} &middot;{" "}
         {new Date(current.occurredAt).toLocaleString()}
       </div>
     </div>

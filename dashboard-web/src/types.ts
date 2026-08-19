@@ -11,14 +11,21 @@ export interface VisionCell {
   currentModelId: string | null;
   totalCount: number | null;
   okCount: number | null;
-  defectCount: number | null;
-  defectRatePct: number | null;
+  ngCount: number | null;
+  dlngCount: number | null;
+  cngCount: number | null;
+  ngRatePct: number | null;
+  dlngRatePct: number | null;
+  cngRatePct: number | null;
   bmCount: number | null;
   lastEventAt: string | null;
   lastHeartbeatAt: string | null;
 }
 
+export type Judge = "NG" | "DLNG" | "C-NG";
+
 export interface TopDefect {
+  judge: string;
   judgeDefect: string;
   count: number;
 }
@@ -34,6 +41,7 @@ export interface RecentDefect {
   defectId: number;
   judge: string;
   judgeDefect: string;
+  cellId: string | null;
   defectSides: string | null;
   occurredAt: string;
   images: ImageRef[];
